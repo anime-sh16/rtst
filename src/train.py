@@ -209,8 +209,6 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                     },
                     step=global_step,
                 )
-            if step >= 3000:
-                break
 
         # Checkpoint
         checkpoint = {
