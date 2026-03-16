@@ -1,0 +1,30 @@
+
+data:
+  content_dir: "data/coco/train2017"     # Path to MS COCO train images
+  style_path:  "data/styles/mosaic.jpg" # Path to style image
+  image_size:   256                       # Input/output resolution
+  batch_size:   2
+  num_workers:  2
+
+model:
+  # Norm layer used inside ResidualBlock, Downsample, Upsample.
+  # "batch" → BatchNorm2d
+  # "instance" → InstanceNorm2d
+  norm_type: "instance"
+
+training:
+  epochs:        2
+  learning_rate: 1.0e-3
+
+  content_weight: 5.0e+0
+  style_weight:   1.0e+3
+  tv_weight:      1.0e+1
+
+  checkpoint_dir: "models/checkpoints"
+  final_model_path: "models/fast-nst.pth"
+
+wandb:
+  project:    "fast-nst"
+  run_name:   "diagnostic-1"
+  log_every_n_steps:       50
+  image_log_every_n_steps: 200

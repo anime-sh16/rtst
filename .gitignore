@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+.vscode/
+.claude/
+.DS_Store
+notebooks/
+
+# W&B
+wandb/
+.env
+
+# Data & model weights
+/data/
+/models/
+exports/
+outputs/
+
+CLAUDE.md
+docs/guides/
