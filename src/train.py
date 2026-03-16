@@ -76,7 +76,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     logger.info(
         "Training: epochs=%d, batch_size=%d, lr=%s",
         config["training"]["epochs"],
-        config["training"]["batch_size"],
+        config["data"]["batch_size"],
         config["training"]["learning_rate"],
     )
     logger.info("Style image: %s", config["data"]["style_path"])
@@ -113,7 +113,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     dataloader: DataLoader = build_dataloader(
         root=config["data"]["content_dir"],
         image_size=config["data"]["image_size"],
-        batch_size=config["training"]["batch_size"],
+        batch_size=config["data"]["batch_size"],
         num_workers=config["data"]["num_workers"],
     )
 
@@ -169,6 +169,9 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             # Logging
             global_step = epoch * len(dataloader) + step
             if step % config["wandb"]["log_every_n_steps"] == 0:
+                w_content = config["training"]["content_weight"] * content_loss.item()
+                w_style = config["training"]["style_weight"] * style_loss.item()
+                w_tv = config["training"]["tv_weight"] * tv_loss.item()
                 logger.info(
                     "Epoch [%d/%d] Step [%d/%d] | total=%.4f content=%.4f style=%.4f tv=%.4f",
                     epoch + 1,
@@ -176,16 +179,20 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                     step,
                     len(dataloader),
                     total_loss.item(),
-                    content_loss.item(),
-                    style_loss.item(),
-                    tv_loss.item(),
+                    w_content,
+                    w_style,
+                    w_tv,
                 )
                 wandb.log(
                     {
                         "loss/total": total_loss.item(),
-                        "loss/content": content_loss.item(),
-                        "loss/style": style_loss.item(),
-                        "loss/tv": tv_loss.item(),
+                        "loss/content": w_content,
+                        "loss/style": w_style,
+                        "loss/tv": w_tv,
+                        "loss/raw_content": content_loss.item(),
+                        "loss/raw_style": style_loss.item(),
+                        "loss/raw_tv": tv_loss.item(),
+                        "training/learning_rate": optimizer.param_groups[0]["lr"],
                     },
                     step=global_step,
                 )
@@ -193,7 +200,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             if step % config["wandb"]["image_log_every_n_steps"] == 0:
                 content_sample = denormalize(content_images[0].cpu())
                 generated_sample = denormalize(generated[0].detach().cpu())
-                style_sample = denormalize(style_target.cpu())
+                style_sample = denormalize(style_target[0].cpu())
                 wandb.log(
                     {
                         "samples/content": wandb.Image(content_sample),
@@ -202,6 +209,8 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                     },
                     step=global_step,
                 )
+            if step >= 3000:
+                break
 
         # Checkpoint
         checkpoint = {
