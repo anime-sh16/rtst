@@ -1,5 +1,6 @@
 import os
 import argparse
+import logging
 from pathlib import Path
 from typing import Any
 from src.models.trans_net import TransformationNetwork
@@ -22,6 +23,17 @@ import torch.nn as nn
 from torchvision import models
 import wandb
 import yaml
+
+logger = logging.getLogger(__name__)
+
+
+def setup_logging() -> None:
+    """Configure root logger with a readable format for terminal output."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +71,15 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     device = get_device()
     img_mean = IMAGENET_MEAN_RESHAPED.to(device)
     img_std = IMAGENET_STD_RESHAPED.to(device)
+
+    logger.info("Device: %s", device)
+    logger.info(
+        "Training: epochs=%d, batch_size=%d, lr=%s",
+        config["training"]["epochs"],
+        config["training"]["batch_size"],
+        config["training"]["learning_rate"],
+    )
+    logger.info("Style image: %s", config["data"]["style_path"])
 
     # W&B setup
     wandb.init(
@@ -148,6 +169,17 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             # Logging
             global_step = epoch * len(dataloader) + step
             if step % config["wandb"]["log_every_n_steps"] == 0:
+                logger.info(
+                    "Epoch [%d/%d] Step [%d/%d] | total=%.4f content=%.4f style=%.4f tv=%.4f",
+                    epoch + 1,
+                    config["training"]["epochs"],
+                    step,
+                    len(dataloader),
+                    total_loss.item(),
+                    content_loss.item(),
+                    style_loss.item(),
+                    tv_loss.item(),
+                )
                 wandb.log(
                     {
                         "loss/total": total_loss.item(),
@@ -179,6 +211,12 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             "loss": total_loss.item(),
         }
         torch.save(checkpoint, checkpoint_dir / f"checkpoint_{epoch}.pth")
+        logger.info(
+            "Epoch %d complete | loss=%.4f | saved to %s",
+            epoch + 1,
+            total_loss.item(),
+            checkpoint_dir / f"checkpoint_{epoch}.pth",
+        )
 
     weights_final = trans_net.state_dict()
     torch.save(weights_final, config["training"]["final_model_path"])
@@ -187,6 +225,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
 
 def main() -> None:
+    setup_logging()
     args = parse_args()
     config = load_config(args.config)
     train(config, resume_path=args.resume)

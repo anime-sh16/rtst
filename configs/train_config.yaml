@@ -1,6 +1,6 @@
 
 data:
-  content_dir: "data/coco/train2017"     # Path to MS COCO train images
+  content_dir: "data/coco/test1000"     # Path to MS COCO train images
   style_path:  "data/styles/mosaic.jpg" # Path to style image
   image_size:   256                       # Input/output resolution
   batch_size:   2
@@ -27,4 +27,4 @@ wandb:
   project:    "fast-nst"
   run_name:   "diagnostic-1"
   log_every_n_steps:       50
-  image_log_every_n_steps: 200
+  image_log_every_n_steps: 100
