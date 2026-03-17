@@ -8,7 +8,6 @@ from src.models.loss_net import LossNetwork, LossFeatures
 from src.utils.image import (
     load_image,
     normalize,
-    denormalize,
     get_device,
     IMAGENET_MEAN_RESHAPED,
     IMAGENET_STD_RESHAPED,
@@ -132,6 +131,20 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         start_epoch = checkpoint["epoch"] + 1
 
+    # Pre-load the validation image samples for logging
+    val_images = [
+        load_image(path, config["data"]["image_size"]).unsqueeze(0).to(device)
+        for path in list(Path(config["data"]["validation_dir"]).iterdir())
+    ]
+    # Dataloader not used since only 2-3 photos for validation
+    # val_dataloader: DataLoader = build_dataloader(
+    #     root=config["data"]["validation_dir"],
+    #     image_size=config["data"]["image_size"],
+    #     batch_size=config["data"]["batch_size"],
+    #     num_workers=config["data"]["num_workers"],
+    #     shuffle=False
+    # )
+
     # Training loop
     for epoch in range(start_epoch, config["training"]["epochs"]):
         for step, content_images in enumerate(dataloader):
@@ -198,17 +211,25 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                 )
 
             if step % config["wandb"]["image_log_every_n_steps"] == 0:
-                content_sample = denormalize(content_images[0].cpu())
-                generated_sample = denormalize(generated[0].detach().cpu())
-                style_sample = denormalize(style_target[0].cpu())
-                wandb.log(
-                    {
-                        "samples/content": wandb.Image(content_sample),
-                        "samples/style": wandb.Image(style_sample),
-                        "samples/generated": wandb.Image(generated_sample),
-                    },
-                    step=global_step,
-                )
+                # Run the validation set images and log them to wandb
+                trans_net.eval()
+                with torch.no_grad():
+                    for val_idx, val_image in enumerate(val_images):
+                        gen_val = trans_net(val_images)
+
+                        wandb.log(
+                            {
+                                f"val/content_{val_idx}": wandb.Image(
+                                    val_image[0].cpu()
+                                ),
+                                f"val/generated_{val_idx}": wandb.Image(
+                                    gen_val[0].cpu()
+                                ),
+                            },
+                            step=global_step,
+                        )
+
+                trans_net.train()
 
         # Checkpoint
         checkpoint = {
