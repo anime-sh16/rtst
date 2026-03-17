@@ -21,6 +21,10 @@ training:
   style_weight:   2.0e+4
   tv_weight:      1.0e+1
 
+  scheduler:
+    type: "cosine"
+    eta_min: 1.0e-6
+
   checkpoint_dir: "models/checkpoints"
   final_model_path: "models/fast-nst.pth"
 

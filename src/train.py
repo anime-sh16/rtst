@@ -17,6 +17,7 @@ from src.utils.loss import compute_content_loss, compute_style_loss, compute_tv_
 from src.data.dataset import build_dataloader
 from torch.utils.data import DataLoader
 from torch.optim import Adam
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import torch
 import torch.nn as nn
 from torchvision import models
@@ -120,6 +121,12 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     optimizer = Adam(
         params=trans_net.parameters(), lr=config["training"]["learning_rate"]
     )
+    # Scheduler
+    scheduler_cfg = config["training"].get("scheduler", {})
+    eta_min = scheduler_cfg.get("eta_min", 1e-6)
+    total_steps = config["training"]["epochs"] * len(dataloader)
+    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=eta_min)
+
     checkpoint_dir = Path(config["training"]["checkpoint_dir"])
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -129,6 +136,8 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         checkpoint = torch.load(resume_path, map_location=device)
         trans_net.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         start_epoch = checkpoint["epoch"] + 1
 
     # Pre-load the validation image samples for logging
@@ -172,6 +181,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
             total_loss.backward()
             optimizer.step()
+            scheduler.step()
 
             # Logging
             global_step = epoch * len(dataloader) + step
@@ -230,6 +240,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             "epoch": epoch,
             "model_state_dict": trans_net.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "loss": total_loss.item(),
         }
         torch.save(checkpoint, checkpoint_dir / f"checkpoint_{epoch}.pth")
