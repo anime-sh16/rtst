@@ -134,21 +134,14 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     # Pre-load the validation image samples for logging
     val_images = [
         load_image(path, config["data"]["image_size"]).unsqueeze(0).to(device)
-        for path in list(Path(config["data"]["validation_dir"]).iterdir())
+        for path in sorted(Path(config["data"]["validation_dir"]).iterdir())
+        if path.suffix.lower() in (".jpg", ".jpeg", ".png")
     ]
-    # Dataloader not used since only 2-3 photos for validation
-    # val_dataloader: DataLoader = build_dataloader(
-    #     root=config["data"]["validation_dir"],
-    #     image_size=config["data"]["image_size"],
-    #     batch_size=config["data"]["batch_size"],
-    #     num_workers=config["data"]["num_workers"],
-    #     shuffle=False
-    # )
 
     # Training loop
     for epoch in range(start_epoch, config["training"]["epochs"]):
         for step, content_images in enumerate(dataloader):
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             content_images = content_images.to(device)
 
@@ -159,7 +152,8 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
             with loss_net as extractor:
                 generated_features: LossFeatures = extractor(generated)
-                content_image_features: LossFeatures = extractor(content_images)
+                with torch.no_grad():
+                    content_image_features: LossFeatures = extractor(content_images)
 
             content_loss = compute_content_loss(
                 generated_features.content, content_image_features.content
@@ -215,7 +209,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                 trans_net.eval()
                 with torch.no_grad():
                     for val_idx, val_image in enumerate(val_images):
-                        gen_val = trans_net(val_images)
+                        gen_val = trans_net(val_image)
 
                         wandb.log(
                             {

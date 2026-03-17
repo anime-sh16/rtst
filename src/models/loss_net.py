@@ -31,6 +31,7 @@ class LossNetwork(nn.Module):
         self.style_layers = style_layers
         self._required_layers = set(content_layers) | set(style_layers)
 
+        # TODO: add early exit after relu4_3
         self.vgg16 = model
         self.vgg16.requires_grad_(False)
         self.vgg16.eval()
