@@ -142,6 +142,8 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     ]
 
     # Training loop
+    total_steps = config["training"]["epochs"] * len(dataloader)
+    image_log_every_n_steps = max(1, total_steps // 10)
     for epoch in range(start_epoch, config["training"]["epochs"]):
         pbar = tqdm(
             enumerate(dataloader),
@@ -212,7 +214,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                     step=global_step,
                 )
 
-            if step % config["wandb"]["image_log_every_n_steps"] == 0:
+            if (global_step + 1) % image_log_every_n_steps == 0:
                 # Run the validation set images and log them to wandb
                 trans_net.eval()
                 with torch.no_grad():
