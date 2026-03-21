@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 from torchvision import models
 import wandb
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,12 @@ def parse_args() -> argparse.Namespace:
         "--batch",
         type=int,
         default=4,
+        help="Batch size.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=0,
         help="Batch size.",
     )
     parser.add_argument(
@@ -93,6 +100,7 @@ DATA_PATH = "data/validation"
 def train(
     epochs: int,
     batch_size: int,
+    num_workers: int,
     lr: float,
     content_w: float,
     style_w: float,
@@ -110,8 +118,13 @@ def train(
         run_name:        W&B run name.
     """
     device = get_device()
+
     img_mean = IMAGENET_MEAN_RESHAPED.to(device)
     img_std = IMAGENET_STD_RESHAPED.to(device)
+
+    torch.manual_seed(0)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(0)
 
     logger.info("Device: %s", device)
     logger.info(
@@ -122,6 +135,7 @@ def train(
     )
     logger.info("Style image: %s", STYLE_IMAGE_PATH)
 
+    IMAGE_LOG_EVERY_N_STEPS = epochs // 5
     config = {
         "training": {
             "epochs": epochs,
@@ -135,7 +149,7 @@ def train(
             "style_path": STYLE_IMAGE_PATH,
             "image_size": IMAGE_SIZE,
             "batch_size": batch_size,
-            "num_workers": 4,
+            "num_workers": num_workers,
         },
         "wandb": {
             "project": PROJECT_NAME,
@@ -177,6 +191,7 @@ def train(
         image_size=config["data"]["image_size"],
         batch_size=config["data"]["batch_size"],
         num_workers=config["data"]["num_workers"],
+        shuffle=False,
     )
 
     # Optimizer
@@ -188,7 +203,8 @@ def train(
     start_epoch = 0
 
     # Training loop
-    for epoch in range(start_epoch, config["training"]["epochs"]):
+    pbar = tqdm(range(start_epoch, config["training"]["epochs"]), desc="Training")
+    for epoch in pbar:
         for step, content_images in enumerate(dataloader):
             optimizer.zero_grad(set_to_none=True)
 
@@ -230,63 +246,50 @@ def train(
 
             # Logging
             global_step = epoch * len(dataloader) + step
-            if step % config["wandb"]["log_every_n_steps"] == 0:
-                w_content = config["training"]["content_weight"] * content_loss.item()
-                w_style = config["training"]["style_weight"] * style_loss.item()
-                w_tv = (
-                    config["training"]["tv_weight"] * tv_loss.item()
-                    if config["training"]["tv_weight"] != 0
-                    else 0
-                )
-                logger.info(
-                    "Epoch [%d/%d] Step [%d/%d] | total=%.4f content=%.4f style=%.4f tv=%.4f",
-                    epoch + 1,
-                    config["training"]["epochs"],
-                    step,
-                    len(dataloader),
-                    total_loss.item(),
-                    w_content,
-                    w_style,
-                    w_tv,
-                )
-                wandb.log(
-                    {
-                        "loss/total": total_loss.item(),
-                        "loss/content": w_content,
-                        "loss/style": w_style,
-                        "loss/tv": w_tv,
-                        "loss/raw_content": content_loss.item(),
-                        "loss/raw_style": style_loss.item(),
-                        "loss/raw_tv": tv_loss.item(),
-                        "training/learning_rate": optimizer.param_groups[0]["lr"],
-                        "weights/tv_loss": config["training"]["tv_weight"],
-                        "weights/content_loss": config["training"]["content_weight"],
-                        "weights/style_loss": config["training"]["style_weight"],
-                    },
-                    step=global_step,
-                )
+            w_content = config["training"]["content_weight"] * content_loss.item()
+            w_style = config["training"]["style_weight"] * style_loss.item()
+            w_tv = (
+                config["training"]["tv_weight"] * tv_loss.item()
+                if config["training"]["tv_weight"] != 0
+                else 0
+            )
 
-            if step % config["wandb"]["image_log_every_n_steps"] == 0:
+            pbar.set_postfix(
+                total=f"{total_loss.item():.4f}",
+                content=f"{w_content:.4f}",
+                style=f"{w_style:.4f}",
+                tv=f"{w_tv:.4f}",
+            )
+
+            wandb.log(
+                {
+                    "loss/total": total_loss.item(),
+                    "loss/content": w_content,
+                    "loss/style": w_style,
+                    "loss/tv": w_tv,
+                    "loss/raw_content": content_loss.item(),
+                    "loss/raw_style": style_loss.item(),
+                    "loss/raw_tv": tv_loss.item(),
+                    "training/learning_rate": optimizer.param_groups[0]["lr"],
+                    "weights/tv_loss": config["training"]["tv_weight"],
+                    "weights/content_loss": config["training"]["content_weight"],
+                    "weights/style_loss": config["training"]["style_weight"],
+                },
+                step=global_step,
+            )
+
+            if (global_step + 1) % config["wandb"]["image_log_every_n_steps"] == 0:
                 # Run the validation set images and log them to wandb
-                for i, (content, generated) in enumerate(
-                    zip(content_images, generated)
-                ):
+                for i, (content, gen) in enumerate(zip(content_images, generated)):
                     wandb.log(
                         {
                             f"image/content_{i}": wandb.Image(
                                 denormalize(content.cpu())
                             ),
-                            f"image/generated_{i}": wandb.Image(
-                                denormalize(generated.cpu())
-                            ),
+                            f"image/generated_{i}": wandb.Image(denormalize(gen.cpu())),
                         },
-                        step=global_step,
+                        step=(global_step + 1),
                     )
-        logger.info(
-            "Epoch %d complete | loss=%.4f",
-            epoch + 1,
-            total_loss.item(),
-        )
 
     wandb.finish()
 
@@ -296,12 +299,13 @@ def main() -> None:
     args = parse_args()
     epoch = args.epoch
     batch_size = args.batch
+    num_workers = args.num_workers
     lr = args.lr
     content_w = args.content_w
     style_w = args.style_w
     tv_w = args.tv_w
     run_name = args.run_name
-    train(epoch, batch_size, lr, content_w, style_w, tv_w, run_name)
+    train(epoch, batch_size, num_workers, lr, content_w, style_w, tv_w, run_name)
 
 
 if __name__ == "__main__":
