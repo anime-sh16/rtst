@@ -23,6 +23,7 @@ import torch.nn as nn
 from torchvision import models
 import wandb
 import yaml
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,12 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
     # Training loop
     for epoch in range(start_epoch, config["training"]["epochs"]):
-        for step, content_images in enumerate(dataloader):
+        pbar = tqdm(
+            enumerate(dataloader),
+            total=len(dataloader),
+            desc=f"Epoch {epoch + 1}/{config['training']['epochs']}",
+        )
+        for step, content_images in pbar:
             optimizer.zero_grad(set_to_none=True)
 
             content_images = content_images.to(device)
@@ -177,21 +183,18 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
             # Logging
             global_step = epoch * len(dataloader) + step
+            w_content = config["training"]["content_weight"] * content_loss.item()
+            w_style = config["training"]["style_weight"] * style_loss.item()
+            w_tv = config["training"]["tv_weight"] * tv_loss.item()
+
+            pbar.set_postfix(
+                total=f"{total_loss.item():.4f}",
+                content=f"{w_content:.4f}",
+                style=f"{w_style:.4f}",
+                tv=f"{w_tv:.4f}",
+            )
+
             if step % config["wandb"]["log_every_n_steps"] == 0:
-                w_content = config["training"]["content_weight"] * content_loss.item()
-                w_style = config["training"]["style_weight"] * style_loss.item()
-                w_tv = config["training"]["tv_weight"] * tv_loss.item()
-                logger.info(
-                    "Epoch [%d/%d] Step [%d/%d] | total=%.4f content=%.4f style=%.4f tv=%.4f",
-                    epoch + 1,
-                    config["training"]["epochs"],
-                    step,
-                    len(dataloader),
-                    total_loss.item(),
-                    w_content,
-                    w_style,
-                    w_tv,
-                )
                 wandb.log(
                     {
                         "loss/total": total_loss.item(),
