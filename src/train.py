@@ -162,10 +162,14 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
     def log_val_images(global_step: int) -> None:
         """Run validation images through the model and log to W&B."""
-        trans_net.eval()
+        # Use unwrapped model for single-image inference (avoids NCCL errors with DataParallel)
+        raw_model = (
+            trans_net.module if isinstance(trans_net, nn.DataParallel) else trans_net
+        )
+        raw_model.eval()
         with torch.no_grad():
             for val_idx, val_image in enumerate(val_images):
-                gen_val = trans_net(val_image)
+                gen_val = raw_model(val_image)
                 wandb.log(
                     {
                         f"val/content_{val_idx}": wandb.Image(
@@ -175,7 +179,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                     },
                     step=global_step,
                 )
-        trans_net.train()
+        raw_model.train()
 
     # Training loop
     image_log_every_n_steps = max(1, num_steps // 10)
