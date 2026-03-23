@@ -1,6 +1,7 @@
 import os
 import argparse
 import logging
+import time
 from pathlib import Path
 from typing import Any
 from src.models.trans_net import TransformationNetwork
@@ -18,6 +19,7 @@ from src.utils.loss import compute_content_loss, compute_style_loss, compute_tv_
 from src.data.dataset import build_dataloader
 from torch.utils.data import DataLoader
 from torch.optim import Adam
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import torch
 import torch.nn as nn
 from torchvision import models
@@ -123,6 +125,17 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         params=trans_net.parameters(), lr=config["training"]["learning_rate"]
     )
 
+    # Numer of steps
+    num_steps = len(dataloader) * config["training"]["epochs"]
+
+    # Scheduler
+    if config["training"]["scheduler"]["type"] == "cosine":
+        scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=num_steps,
+            eta_min=config["training"]["scheduler"]["eta_min"],
+        )
+
     checkpoint_dir = Path(config["training"]["checkpoint_dir"])
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -132,7 +145,13 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         checkpoint = torch.load(resume_path, map_location=device)
         trans_net.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         start_epoch = checkpoint["epoch"] + 1
+
+    # Wrap with DataParallel after loading checkpoint (clean keys)
+    if torch.cuda.device_count() > 1:
+        logger.info("Using %d GPUs with DataParallel", torch.cuda.device_count())
+        trans_net = nn.DataParallel(trans_net)
 
     # Pre-load the validation image samples for logging
     val_images = [
@@ -141,9 +160,25 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         if path.suffix.lower() in (".jpg", ".jpeg", ".png")
     ]
 
+    def log_val_images(global_step: int) -> None:
+        """Run validation images through the model and log to W&B."""
+        trans_net.eval()
+        with torch.no_grad():
+            for val_idx, val_image in enumerate(val_images):
+                gen_val = trans_net(val_image)
+                wandb.log(
+                    {
+                        f"val/content_{val_idx}": wandb.Image(
+                            denormalize(val_image[0].cpu())
+                        ),
+                        f"val/generated_{val_idx}": wandb.Image(gen_val[0].cpu()),
+                    },
+                    step=global_step,
+                )
+        trans_net.train()
+
     # Training loop
-    total_steps = config["training"]["epochs"] * len(dataloader)
-    image_log_every_n_steps = max(1, total_steps // 10)
+    image_log_every_n_steps = max(1, num_steps // 10)
     for epoch in range(start_epoch, config["training"]["epochs"]):
         pbar = tqdm(
             enumerate(dataloader),
@@ -151,6 +186,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             desc=f"Epoch {epoch + 1}/{config['training']['epochs']}",
         )
         for step, content_images in pbar:
+            step_start = time.monotonic()
             optimizer.zero_grad(set_to_none=True)
 
             content_images = content_images.to(device)
@@ -158,7 +194,6 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             generated = trans_net(content_images)
             # Normalise
             generated = normalize(generated, img_mean, img_std)
-            content_images = normalize(content_images, img_mean, img_std)
 
             with loss_net as extractor:
                 generated_features: LossFeatures = extractor(generated)
@@ -181,7 +216,13 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             )
 
             total_loss.backward()
+            # max_norm=inf: no clipping, just computing norm for monitoring
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                trans_net.parameters(), max_norm=float("inf")
+            )
             optimizer.step()
+            scheduler.step()
+            batch_time = time.monotonic() - step_start
 
             # Logging
             global_step = epoch * len(dataloader) + step
@@ -207,6 +248,9 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                         "loss/raw_style": style_loss.item(),
                         "loss/raw_tv": tv_loss.item(),
                         "training/learning_rate": optimizer.param_groups[0]["lr"],
+                        "training/global_step": global_step,
+                        "training/grad_norm": grad_norm.item(),
+                        "training/batch_time": batch_time,
                         "weights/tv_loss": config["training"]["tv_weight"],
                         "weights/content_loss": config["training"]["content_weight"],
                         "weights/style_loss": config["training"]["style_weight"],
@@ -215,31 +259,17 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                 )
 
             if (global_step + 1) % image_log_every_n_steps == 0:
-                # Run the validation set images and log them to wandb
-                trans_net.eval()
-                with torch.no_grad():
-                    for val_idx, val_image in enumerate(val_images):
-                        gen_val = trans_net(val_image)
+                log_val_images(global_step + 1)
 
-                        wandb.log(
-                            {
-                                f"val/content_{val_idx}": wandb.Image(
-                                    denormalize(val_image[0].cpu())
-                                ),
-                                f"val/generated_{val_idx}": wandb.Image(
-                                    gen_val[0].cpu()
-                                ),
-                            },
-                            step=global_step,
-                        )
-
-                trans_net.train()
-
-        # Checkpoint
+        # Checkpoint — unwrap DataParallel if present
+        model_to_save = (
+            trans_net.module if isinstance(trans_net, nn.DataParallel) else trans_net
+        )
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": trans_net.state_dict(),
+            "model_state_dict": model_to_save.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "loss": total_loss.item(),
         }
         torch.save(checkpoint, checkpoint_dir / f"checkpoint_{epoch}.pth")
@@ -250,7 +280,13 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             checkpoint_dir / f"checkpoint_{epoch}.pth",
         )
 
-    weights_final = trans_net.state_dict()
+    # Log final validation images after training completes
+    log_val_images(num_steps)
+
+    model_to_save = (
+        trans_net.module if isinstance(trans_net, nn.DataParallel) else trans_net
+    )
+    weights_final = model_to_save.state_dict()
     torch.save(weights_final, config["training"]["final_model_path"])
 
     wandb.finish()

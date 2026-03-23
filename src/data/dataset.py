@@ -19,7 +19,9 @@ class COCODataset(Dataset):
         self.image_size = image_size
 
         extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-        self.paths = [f for f in self.root.iterdir() if f.suffix.lower() in extensions]
+        self.paths = sorted(
+            f for f in self.root.iterdir() if f.suffix.lower() in extensions
+        )
 
     def __len__(self) -> int:
         return len(self.paths)

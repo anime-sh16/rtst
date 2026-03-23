@@ -12,6 +12,10 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 IMAGENET_MEAN_RESHAPED = torch.tensor(IMAGENET_MEAN).reshape(-1, 1, 1)
 IMAGENET_STD_RESHAPED = torch.tensor(IMAGENET_STD).reshape(-1, 1, 1)
 
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(0)
+
 
 def get_device() -> torch.device:
     """Return the best available device: CUDA > MPS > CPU."""

@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tv_w",
         type=float,
-        default=0.0,
+        default=1.0,
         help="Weight for tv loss.",
     )
     parser.add_argument(
@@ -233,14 +233,11 @@ def train(
             generated = trans_net(content_images)
             # Normalise
             generated = normalize(generated, img_mean, img_std)
-            content_images_loss = normalize(content_images, img_mean, img_std)
 
             with loss_net as extractor:
                 generated_features: LossFeatures = extractor(generated)
                 with torch.no_grad():
-                    content_image_features: LossFeatures = extractor(
-                        content_images_loss
-                    )
+                    content_image_features: LossFeatures = extractor(content_images)
 
             content_loss = compute_content_loss(
                 generated_features.content, content_image_features.content
