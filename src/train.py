@@ -183,106 +183,110 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
     # Training loop
     image_log_every_n_steps = max(1, num_steps // 10)
-    for epoch in range(start_epoch, config["training"]["epochs"]):
-        pbar = tqdm(
-            enumerate(dataloader),
-            total=len(dataloader),
-            desc=f"Epoch {epoch + 1}/{config['training']['epochs']}",
-        )
-        for step, content_images in pbar:
-            step_start = time.monotonic()
-            optimizer.zero_grad(set_to_none=True)
+    with loss_net as extractor:
+        for epoch in range(start_epoch, config["training"]["epochs"]):
+            pbar = tqdm(
+                enumerate(dataloader),
+                total=len(dataloader),
+                desc=f"Epoch {epoch + 1}/{config['training']['epochs']}",
+            )
+            for step, content_images in pbar:
+                step_start = time.monotonic()
+                optimizer.zero_grad(set_to_none=True)
 
-            content_images = content_images.to(device)
+                content_images = content_images.to(device)
 
-            generated = trans_net(content_images)
-            # Normalise
-            generated = normalize(generated, img_mean, img_std)
+                generated = trans_net(content_images)
+                # Normalise
+                generated = normalize(generated, img_mean, img_std)
 
-            with loss_net as extractor:
                 generated_features: LossFeatures = extractor(generated)
                 with torch.no_grad():
                     content_image_features: LossFeatures = extractor(content_images)
 
-            content_loss = compute_content_loss(
-                generated_features.content, content_image_features.content
-            )
-
-            style_loss = compute_style_loss(
-                generated_features.style, style_target_features
-            )
-            tv_loss = compute_tv_loss(generated)
-
-            total_loss = (
-                config["training"]["content_weight"] * content_loss
-                + config["training"]["style_weight"] * style_loss
-                + config["training"]["tv_weight"] * tv_loss
-            )
-
-            total_loss.backward()
-            # max_norm=inf: no clipping, just computing norm for monitoring
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                trans_net.parameters(), max_norm=float("inf")
-            )
-            optimizer.step()
-            scheduler.step()
-            batch_time = time.monotonic() - step_start
-
-            # Logging
-            global_step = epoch * len(dataloader) + step
-            w_content = config["training"]["content_weight"] * content_loss.item()
-            w_style = config["training"]["style_weight"] * style_loss.item()
-            w_tv = config["training"]["tv_weight"] * tv_loss.item()
-
-            pbar.set_postfix(
-                total=f"{total_loss.item():.4f}",
-                content=f"{w_content:.4f}",
-                style=f"{w_style:.4f}",
-                tv=f"{w_tv:.4f}",
-            )
-
-            if step % config["wandb"]["log_every_n_steps"] == 0:
-                wandb.log(
-                    {
-                        "loss/total": total_loss.item(),
-                        "loss/content": w_content,
-                        "loss/style": w_style,
-                        "loss/tv": w_tv,
-                        "loss/raw_content": content_loss.item(),
-                        "loss/raw_style": style_loss.item(),
-                        "loss/raw_tv": tv_loss.item(),
-                        "training/learning_rate": optimizer.param_groups[0]["lr"],
-                        "training/global_step": global_step,
-                        "training/grad_norm": grad_norm.item(),
-                        "training/batch_time": batch_time,
-                        "weights/tv_loss": config["training"]["tv_weight"],
-                        "weights/content_loss": config["training"]["content_weight"],
-                        "weights/style_loss": config["training"]["style_weight"],
-                    },
-                    step=global_step,
+                content_loss = compute_content_loss(
+                    generated_features.content, content_image_features.content
                 )
 
-            if (global_step + 1) % image_log_every_n_steps == 0:
-                log_val_images(global_step + 1)
+                style_loss = compute_style_loss(
+                    generated_features.style, style_target_features
+                )
+                tv_loss = compute_tv_loss(generated)
 
-        # Checkpoint — unwrap DataParallel if present
-        model_to_save = (
-            trans_net.module if isinstance(trans_net, nn.DataParallel) else trans_net
-        )
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": model_to_save.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "loss": total_loss.item(),
-        }
-        torch.save(checkpoint, checkpoint_dir / f"checkpoint_{epoch}.pth")
-        logger.info(
-            "Epoch %d complete | loss=%.4f | saved to %s",
-            epoch + 1,
-            total_loss.item(),
-            checkpoint_dir / f"checkpoint_{epoch}.pth",
-        )
+                total_loss = (
+                    config["training"]["content_weight"] * content_loss
+                    + config["training"]["style_weight"] * style_loss
+                    + config["training"]["tv_weight"] * tv_loss
+                )
+
+                total_loss.backward()
+                # max_norm=inf: no clipping, just computing norm for monitoring
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    trans_net.parameters(), max_norm=float("inf")
+                )
+                optimizer.step()
+                scheduler.step()
+                batch_time = time.monotonic() - step_start
+
+                # Logging
+                global_step = epoch * len(dataloader) + step
+                w_content = config["training"]["content_weight"] * content_loss.item()
+                w_style = config["training"]["style_weight"] * style_loss.item()
+                w_tv = config["training"]["tv_weight"] * tv_loss.item()
+
+                pbar.set_postfix(
+                    total=f"{total_loss.item():.4f}",
+                    content=f"{w_content:.4f}",
+                    style=f"{w_style:.4f}",
+                    tv=f"{w_tv:.4f}",
+                )
+
+                if step % config["wandb"]["log_every_n_steps"] == 0:
+                    wandb.log(
+                        {
+                            "loss/total": total_loss.item(),
+                            "loss/content": w_content,
+                            "loss/style": w_style,
+                            "loss/tv": w_tv,
+                            "loss/raw_content": content_loss.item(),
+                            "loss/raw_style": style_loss.item(),
+                            "loss/raw_tv": tv_loss.item(),
+                            "training/learning_rate": optimizer.param_groups[0]["lr"],
+                            "training/global_step": global_step,
+                            "training/grad_norm": grad_norm.item(),
+                            "training/batch_time": batch_time,
+                            "weights/tv_loss": config["training"]["tv_weight"],
+                            "weights/content_loss": config["training"][
+                                "content_weight"
+                            ],
+                            "weights/style_loss": config["training"]["style_weight"],
+                        },
+                        step=global_step,
+                    )
+
+                if (global_step + 1) % image_log_every_n_steps == 0:
+                    log_val_images(global_step + 1)
+
+            # Checkpoint — unwrap DataParallel if present
+            model_to_save = (
+                trans_net.module
+                if isinstance(trans_net, nn.DataParallel)
+                else trans_net
+            )
+            checkpoint = {
+                "epoch": epoch,
+                "model_state_dict": model_to_save.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "loss": total_loss.item(),
+            }
+            torch.save(checkpoint, checkpoint_dir / f"checkpoint_{epoch}.pth")
+            logger.info(
+                "Epoch %d complete | loss=%.4f | saved to %s",
+                epoch + 1,
+                total_loss.item(),
+                checkpoint_dir / f"checkpoint_{epoch}.pth",
+            )
 
     # Log final validation images after training completes
     log_val_images(num_steps)
