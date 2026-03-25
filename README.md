@@ -33,7 +33,7 @@ During training, the transformer net learns to minimize a weighted combination o
 │   │   ├── loss.py               # Perceptual loss functions
 │   │   └── image.py              # Image I/O and transforms
 │   ├── train.py                  # Training loop with DDP & W&B logging
-│   ├── inference.py              # Single-image stylization
+│   ├── inference.py              # Single/batch image stylization
 │   └── export.py                 # Model export (TorchScript / ONNX)
 ├── tests/                        # Unit tests (pytest)
 ├── docs/
@@ -79,15 +79,73 @@ Resume from checkpoint:
 uv run torchrun --nproc_per_node=<NUM_GPUS> src/train.py --config configs/train_config.yaml --resume models/checkpoints/checkpoint_0.pth
 ```
 
-**Inference** (requires trained weights):
+**Inference** (uses `models/fast-nst.pth` by default):
+
+Single image:
 ```bash
-uv run python src/inference.py --image path/to/image.jpg --model path/to/weights.pth
+uv run python src/inference.py --image path/to/image.jpg
 ```
+
+Directory (batched, square resize):
+```bash
+uv run python src/inference.py --image path/to/dir/ --image-size 512 --batch-size 4
+```
+
+Directory (sequential, preserve aspect ratio):
+```bash
+uv run python src/inference.py --image path/to/dir/ --image-size 512 --keep-aspect
+```
+
+Results are saved to `data/results/` by default (override with `--output-dir`).
 
 **Export for mobile** (requires trained weights):
 ```bash
 uv run python src/export.py --weights path/to/weights.pth --format torchscript
 ```
+
+## Training Configuration
+
+The final model was trained on **MS COCO 2017** (~118k images) with the **mosaic** style image, using the following hyperparameters (after tuning):
+
+| Parameter | Value |
+|---|---|
+| Image size | 256 × 256 |
+| Batch size | 24 (per GPU) |
+| GPU | T4 x2 (kaggle) |
+| Epochs | 3 |
+| Learning rate | 1e-3 (cosine schedule → 1e-6) |
+| Content weight | 5.0 |
+| Style weight | 2e5 |
+| Normalization | InstanceNorm2d |
+| Optimizer | Adam |
+
+Style image: `data/styles/mosaic.jpg`
+
+## Results
+
+The trained model was evaluated at multiple resolutions to test generalization beyond the 256 × 256 training size:
+
+- **256 × 256** — Training resolution. Strongest stylization.
+- **512 × 512** — Upscaled. Style transfer still clearly visible, with slightly reduced intensity.
+- **1024 × 1024** — 4× training size. Stylization becomes subtler but content is well preserved with visible stylization.
+- **keep-aspect-512 / keep-aspect-1024** — Resized to target on the longer edge while preserving the original aspect ratio. Results are very similar to their square-resized counterparts, showing that maintaining aspect ratio has minimal impact on output quality.
+
+**Key takeaways:**
+1. The model generalizes well to resolutions higher than the training size.
+2. Stylization intensity decreases gradually as resolution increases.
+3. Aspect ratio preservation vs. square resize produces nearly identical results at the same target size.
+
+### Comparison Table
+
+| Input Image | Original | 256 | 512 | 1024 | keep-aspect-512 | keep-aspect-1024 |
+|---|---|---|---|---|---|---|
+| flower | ![](data/test_inference/flower.jpg) | ![](data/results/256/flower_style.jpg) | ![](data/results/512/flower_style.jpg) | ![](data/results/1024/flower_style.jpg) | ![](data/results/keep-aspect-512/flower_style.jpg) | ![](data/results/keep-aspect-1024/flower_style.jpg) |
+| me-1 | ![](data/test_inference/me-1.jpg) | ![](data/results/256/me-1_style.jpg) | ![](data/results/512/me-1_style.jpg) | ![](data/results/1024/me-1_style.jpg) | ![](data/results/keep-aspect-512/me-1_style.jpg) | ![](data/results/keep-aspect-1024/me-1_style.jpg) |
+| mummy-papa | ![](data/test_inference/mummy-papa.jpg) | ![](data/results/256/mummy-papa_style.jpg) | ![](data/results/512/mummy-papa_style.jpg) | ![](data/results/1024/mummy-papa_style.jpg) | ![](data/results/keep-aspect-512/mummy-papa_style.jpg) | ![](data/results/keep-aspect-1024/mummy-papa_style.jpg) |
+| neko | ![](data/test_inference/neko.jpg) | ![](data/results/256/neko_style.jpg) | ![](data/results/512/neko_style.jpg) | ![](data/results/1024/neko_style.jpg) | ![](data/results/keep-aspect-512/neko_style.jpg) | ![](data/results/keep-aspect-1024/neko_style.jpg) |
+| pancake | ![](data/test_inference/pancake.jpg) | ![](data/results/256/pancake_style.jpg) | ![](data/results/512/pancake_style.jpg) | ![](data/results/1024/pancake_style.jpg) | ![](data/results/keep-aspect-512/pancake_style.jpg) | ![](data/results/keep-aspect-1024/pancake_style.jpg) |
+| random-scene-1 | ![](data/test_inference/random-scene-1.jpg) | ![](data/results/256/random-scene-1_style.jpg) | ![](data/results/512/random-scene-1_style.jpg) | ![](data/results/1024/random-scene-1_style.jpg) | ![](data/results/keep-aspect-512/random-scene-1_style.jpg) | ![](data/results/keep-aspect-1024/random-scene-1_style.jpg) |
+| random-scene-2 | ![](data/test_inference/random-scene-2.jpg) | ![](data/results/256/random-scene-2_style.jpg) | ![](data/results/512/random-scene-2_style.jpg) | ![](data/results/1024/random-scene-2_style.jpg) | ![](data/results/keep-aspect-512/random-scene-2_style.jpg) | ![](data/results/keep-aspect-1024/random-scene-2_style.jpg) |
 
 ## Development
 
