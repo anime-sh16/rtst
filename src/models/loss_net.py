@@ -31,7 +31,6 @@ class LossNetwork(nn.Module):
         self.style_layers = style_layers
         self._required_layers = set(content_layers) | set(style_layers)
 
-        # TODO: add early exit after relu4_3
         self.vgg16 = model.features[:23]
         self.vgg16.requires_grad_(False)
         self.vgg16.eval()
@@ -92,7 +91,7 @@ class LossNetwork(nn.Module):
         Returns:
             LossFeatures with two dicts: {layer_name → feature_tensor}.
         """
-        self.vgg16.features(x)
+        self.vgg16(x)
         content = {}
         style = {}
         res = self.extracted_layers.copy()
