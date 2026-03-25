@@ -78,6 +78,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
+        torch.backends.cudnn.benchmark = True
         device = torch.device(f"cuda:{local_rank}")
     else:
         device = torch.device("cpu")
@@ -148,6 +149,8 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
             eta_min=config["training"]["scheduler"]["eta_min"],
         )
 
+    scaler = torch.amp.GradScaler()
+
     checkpoint_dir = Path(config["training"]["checkpoint_dir"])
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -210,35 +213,38 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
                 content_images = content_images.to(device)
 
-                generated = trans_net(content_images)
-                # Normalise
-                generated = normalize(generated, img_mean, img_std)
+                with torch.amp.autocast(device_type="cuda"):
+                    generated = trans_net(content_images)
+                    # Normalise
+                    generated = normalize(generated, img_mean, img_std)
 
-                generated_features: LossFeatures = extractor(generated)
-                with torch.no_grad():
-                    content_image_features: LossFeatures = extractor(content_images)
+                    generated_features: LossFeatures = extractor(generated)
+                    with torch.no_grad():
+                        content_image_features: LossFeatures = extractor(content_images)
 
-                content_loss = compute_content_loss(
-                    generated_features.content, content_image_features.content
-                )
+                    content_loss = compute_content_loss(
+                        generated_features.content, content_image_features.content
+                    )
 
-                style_loss = compute_style_loss(
-                    generated_features.style, style_target_features
-                )
-                tv_loss = compute_tv_loss(generated)
+                    style_loss = compute_style_loss(
+                        generated_features.style, style_target_features
+                    )
+                    tv_loss = compute_tv_loss(generated)
 
-                total_loss = (
-                    config["training"]["content_weight"] * content_loss
-                    + config["training"]["style_weight"] * style_loss
-                    + config["training"]["tv_weight"] * tv_loss
-                )
+                    total_loss = (
+                        config["training"]["content_weight"] * content_loss
+                        + config["training"]["style_weight"] * style_loss
+                        + config["training"]["tv_weight"] * tv_loss
+                    )
 
-                total_loss.backward()
+                scaler.scale(total_loss).backward()
+                scaler.unscale_(optimizer)
                 # max_norm=inf: no clipping, just computing norm for monitoring
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     trans_net.parameters(), max_norm=float("inf")
                 )
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 scheduler.step()
                 batch_time = time.monotonic() - step_start
 
