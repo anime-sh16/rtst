@@ -141,7 +141,6 @@ The trained model was evaluated at multiple resolutions to test generalization b
 |---|---|---|---|---|---|
 | flower | ![](data/test_inference/flower.jpg) | ![](data/results/256/flower_style.jpg) | ![](data/results/512/flower_style.jpg) | ![](data/results/1024/flower_style.jpg) | ![](data/results/keep-aspect-1024/flower_style.jpg) |
 | me-1 | ![](data/test_inference/me-1.jpg) | ![](data/results/256/me-1_style.jpg) | ![](data/results/512/me-1_style.jpg) | ![](data/results/1024/me-1_style.jpg) | ![](data/results/keep-aspect-1024/me-1_style.jpg) |
-| mummy-papa | ![](data/test_inference/mummy-papa.jpg) | ![](data/results/256/mummy-papa_style.jpg) | ![](data/results/512/mummy-papa_style.jpg) | ![](data/results/1024/mummy-papa_style.jpg) | ![](data/results/keep-aspect-1024/mummy-papa_style.jpg) |
 | neko | ![](data/test_inference/neko.jpg) | ![](data/results/256/neko_style.jpg) | ![](data/results/512/neko_style.jpg) | ![](data/results/1024/neko_style.jpg) | ![](data/results/keep-aspect-1024/neko_style.jpg) |
 | pancake | ![](data/test_inference/pancake.jpg) | ![](data/results/256/pancake_style.jpg) | ![](data/results/512/pancake_style.jpg) | ![](data/results/1024/pancake_style.jpg) | ![](data/results/keep-aspect-1024/pancake_style.jpg) |
 | random-scene-1 | ![](data/test_inference/random-scene-1.jpg) | ![](data/results/256/random-scene-1_style.jpg) | ![](data/results/512/random-scene-1_style.jpg) | ![](data/results/1024/random-scene-1_style.jpg) | ![](data/results/keep-aspect-1024/random-scene-1_style.jpg) |
