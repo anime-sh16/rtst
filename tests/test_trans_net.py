@@ -1,12 +1,3 @@
-"""
-Unit tests for the TransformationNetwork (trans_net.py).
-
-What we verify:
-  - Output shape matches input shape (it's an image-to-image network).
-  - Output values are in [0, 1] (sigmoid at the end of Upsample).
-  - The network runs on both CPU and CUDA/MPS (if available).
-"""
-
 import pytest
 import torch
 

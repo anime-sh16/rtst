@@ -13,7 +13,7 @@ class TransformationNetwork(nn.Module):
             stride=2,
             norm_layer_type=norm_layer_type,
         )
-        self.upsample_block = Upsample(
+        self.upsample_block = UpsampleV2(
             in_channels=128,
             out_channels=3,
             kernel_size=3,
@@ -143,6 +143,53 @@ class TransposeConvLayer(nn.Module):
         return self.conv2d(x)
 
 
+class UpsampleConvLayer(nn.Module):
+    """Upsample + Conv replacement for TransposeConvLayer to avoid checkerboard artifacts."""
+
+    def __init__(self, in_channels, out_channels, kernel_size, stride, bias=False):
+        super().__init__()
+        self.upsample = nn.Upsample(scale_factor=stride, mode="nearest")
+        self.conv2d = ConvLayer(
+            in_channels, out_channels, kernel_size, stride=1, bias=bias
+        )
+
+    def forward(self, x) -> torch.Tensor:
+        x = self.upsample(x)
+        x = self.conv2d(x)
+        return x
+
+
+class UpsampleV2(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride,
+        norm_layer_type=nn.BatchNorm2d,
+    ):
+        super().__init__()
+        out_channels_1 = in_channels // 2
+        out_channels_2 = out_channels_1 // 2
+        out_channels_3 = out_channels
+
+        self.upsample = nn.Sequential(
+            UpsampleConvLayer(in_channels, out_channels_1, kernel_size, stride),
+            norm_layer_type(out_channels_1),
+            nn.ReLU(inplace=True),
+            UpsampleConvLayer(out_channels_1, out_channels_2, kernel_size, stride),
+            norm_layer_type(out_channels_2),
+            nn.ReLU(inplace=True),
+            ConvLayer(
+                out_channels_2, out_channels_3, kernel_size=9, stride=1, bias=True
+            ),
+        )
+
+    def forward(self, x) -> torch.Tensor:
+        x = self.upsample(x)
+        return torch.sigmoid(x)
+
+
 class Upsample(nn.Module):
     def __init__(
         self,
@@ -165,7 +212,7 @@ class Upsample(nn.Module):
             TransposeConvLayer(out_channels_1, out_channels_2, kernel_size, stride),
             norm_layer_type(out_channels_2),
             nn.ReLU(inplace=True),
-            TransposeConvLayer(
+            ConvLayer(
                 out_channels_2, out_channels_3, kernel_size=9, stride=1, bias=True
             ),
         )

@@ -18,7 +18,8 @@ wandb/
 .env
 
 # Data & model weights
-/data/
+/data/coco/
+/data/validation/
 /models/
 exports/
 outputs/

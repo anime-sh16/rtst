@@ -1,5 +1,7 @@
 import os
 import argparse
+import logging
+import time
 from pathlib import Path
 from typing import Any
 from src.models.trans_net import TransformationNetwork
@@ -8,20 +10,33 @@ from src.utils.image import (
     load_image,
     normalize,
     denormalize,
-    get_device,
     IMAGENET_MEAN_RESHAPED,
     IMAGENET_STD_RESHAPED,
 )
 from src.utils.gram import gram_matrix
 from src.utils.loss import compute_content_loss, compute_style_loss, compute_tv_loss
 from src.data.dataset import build_dataloader
-from torch.utils.data import DataLoader
 from torch.optim import Adam
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision import models
 import wandb
 import yaml
+from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
+
+
+def setup_logging() -> None:
+    """Configure root logger with a readable format for terminal output."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,16 +71,36 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         config:      Parsed YAML config dictionary.
         resume_path: Optional path to a checkpoint .pth file to resume training from.
     """
-    device = get_device()
+    # DDP setup — torchrun sets these env vars automatically
+    distributed = dist.is_initialized()
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    is_main = local_rank == 0
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device("cpu")
+
     img_mean = IMAGENET_MEAN_RESHAPED.to(device)
     img_std = IMAGENET_STD_RESHAPED.to(device)
 
-    # W&B setup
-    wandb.init(
-        project=config["wandb"]["project"],
-        name=config["wandb"]["run_name"],
-        config=config,
+    logger.info("Device: %s (rank %d, distributed=%s)", device, local_rank, distributed)
+    logger.info(
+        "Training: epochs=%d, batch_size=%d, lr=%s",
+        config["training"]["epochs"],
+        config["data"]["batch_size"],
+        config["training"]["learning_rate"],
     )
+    logger.info("Style image: %s", config["data"]["style_path"])
+
+    # W&B setup — only on main process to avoid duplicate logging
+    if is_main:
+        wandb.init(
+            project=config["wandb"]["project"],
+            name=config["wandb"]["run_name"],
+            config=config,
+        )
 
     # Model setup
     norm_type = (
@@ -89,17 +124,30 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         style_target_features.update({key: gram_matrix(value.detach())})
 
     # DataLoader
-    dataloader: DataLoader = build_dataloader(
+    dataloader, sampler = build_dataloader(
         root=config["data"]["content_dir"],
         image_size=config["data"]["image_size"],
-        batch_size=config["training"]["batch_size"],
+        batch_size=config["data"]["batch_size"],
         num_workers=config["data"]["num_workers"],
+        distributed=distributed,
     )
 
     # Optimizer
     optimizer = Adam(
         params=trans_net.parameters(), lr=config["training"]["learning_rate"]
     )
+
+    # Numer of steps
+    num_steps = len(dataloader) * config["training"]["epochs"]
+
+    # Scheduler
+    if config["training"]["scheduler"]["type"] == "cosine":
+        scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=num_steps,
+            eta_min=config["training"]["scheduler"]["eta_min"],
+        )
+
     checkpoint_dir = Path(config["training"]["checkpoint_dir"])
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -109,86 +157,172 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         checkpoint = torch.load(resume_path, map_location=device)
         trans_net.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         start_epoch = checkpoint["epoch"] + 1
 
+    # Wrap with DDP after loading checkpoint (clean keys)
+    if distributed:
+        logger.info("Using DDP on rank %d", local_rank)
+        trans_net = DDP(trans_net, device_ids=[local_rank])
+
+    # Pre-load the validation image samples for logging
+    val_images = [
+        load_image(path, config["data"]["image_size"]).unsqueeze(0).to(device)
+        for path in sorted(Path(config["data"]["validation_dir"]).iterdir())
+        if path.suffix.lower() in (".jpg", ".jpeg", ".png")
+    ]
+
+    def log_val_images(global_step: int) -> None:
+        """Run validation images through the model and log to W&B (main process only)."""
+        if not is_main:
+            return
+        raw_model = trans_net.module if isinstance(trans_net, DDP) else trans_net
+        raw_model.eval()
+        with torch.no_grad():
+            for val_idx, val_image in enumerate(val_images):
+                gen_val = raw_model(val_image)
+                wandb.log(
+                    {
+                        f"val/content_{val_idx}": wandb.Image(
+                            denormalize(val_image[0].cpu())
+                        ),
+                        f"val/generated_{val_idx}": wandb.Image(gen_val[0].cpu()),
+                    },
+                    step=global_step,
+                )
+        raw_model.train()
+
     # Training loop
-    for epoch in range(start_epoch, config["training"]["epochs"]):
-        for step, content_images in enumerate(dataloader):
-            optimizer.zero_grad()
+    image_log_every_n_steps = max(1, num_steps // 10)
+    with loss_net as extractor:
+        for epoch in range(start_epoch, config["training"]["epochs"]):
+            if sampler is not None:
+                sampler.set_epoch(epoch)
+            pbar = tqdm(
+                enumerate(dataloader),
+                total=len(dataloader),
+                desc=f"Epoch {epoch + 1}/{config['training']['epochs']}",
+                disable=not is_main,
+            )
+            for step, content_images in pbar:
+                step_start = time.monotonic()
+                optimizer.zero_grad(set_to_none=True)
 
-            content_images = content_images.to(device)
+                content_images = content_images.to(device)
 
-            generated = trans_net(content_images)
-            # Normalise
-            generated = normalize(generated, img_mean, img_std)
-            content_images = normalize(content_images, img_mean, img_std)
+                generated = trans_net(content_images)
+                # Normalise
+                generated = normalize(generated, img_mean, img_std)
 
-            with loss_net as extractor:
                 generated_features: LossFeatures = extractor(generated)
-                content_image_features: LossFeatures = extractor(content_images)
+                with torch.no_grad():
+                    content_image_features: LossFeatures = extractor(content_images)
 
-            content_loss = compute_content_loss(
-                generated_features.content, content_image_features.content
-            )
-
-            style_loss = compute_style_loss(
-                generated_features.style, style_target_features
-            )
-            tv_loss = compute_tv_loss(generated)
-
-            total_loss = (
-                config["training"]["content_weight"] * content_loss
-                + config["training"]["style_weight"] * style_loss
-                + config["training"]["tv_weight"] * tv_loss
-            )
-
-            total_loss.backward()
-            optimizer.step()
-
-            # Logging
-            global_step = epoch * len(dataloader) + step
-            if step % config["wandb"]["log_every_n_steps"] == 0:
-                wandb.log(
-                    {
-                        "loss/total": total_loss.item(),
-                        "loss/content": content_loss.item(),
-                        "loss/style": style_loss.item(),
-                        "loss/tv": tv_loss.item(),
-                    },
-                    step=global_step,
+                content_loss = compute_content_loss(
+                    generated_features.content, content_image_features.content
                 )
 
-            if step % config["wandb"]["image_log_every_n_steps"] == 0:
-                content_sample = denormalize(content_images[0].cpu())
-                generated_sample = denormalize(generated[0].detach().cpu())
-                style_sample = denormalize(style_target.cpu())
-                wandb.log(
-                    {
-                        "samples/content": wandb.Image(content_sample),
-                        "samples/style": wandb.Image(style_sample),
-                        "samples/generated": wandb.Image(generated_sample),
-                    },
-                    step=global_step,
+                style_loss = compute_style_loss(
+                    generated_features.style, style_target_features
+                )
+                tv_loss = compute_tv_loss(generated)
+
+                total_loss = (
+                    config["training"]["content_weight"] * content_loss
+                    + config["training"]["style_weight"] * style_loss
+                    + config["training"]["tv_weight"] * tv_loss
                 )
 
-        # Checkpoint
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": trans_net.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "loss": total_loss.item(),
-        }
-        torch.save(checkpoint, checkpoint_dir / f"checkpoint_{epoch}.pth")
+                total_loss.backward()
+                # max_norm=inf: no clipping, just computing norm for monitoring
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    trans_net.parameters(), max_norm=float("inf")
+                )
+                optimizer.step()
+                scheduler.step()
+                batch_time = time.monotonic() - step_start
 
-    weights_final = trans_net.state_dict()
-    torch.save(weights_final, config["training"]["final_model_path"])
+                # Logging
+                global_step = epoch * len(dataloader) + step
+                w_content = config["training"]["content_weight"] * content_loss.item()
+                w_style = config["training"]["style_weight"] * style_loss.item()
+                w_tv = config["training"]["tv_weight"] * tv_loss.item()
 
-    wandb.finish()
+                pbar.set_postfix(
+                    total=f"{total_loss.item():.4f}",
+                    content=f"{w_content:.4f}",
+                    style=f"{w_style:.4f}",
+                    tv=f"{w_tv:.4f}",
+                )
+
+                if is_main and step % config["wandb"]["log_every_n_steps"] == 0:
+                    wandb.log(
+                        {
+                            "loss/total": total_loss.item(),
+                            "loss/content": w_content,
+                            "loss/style": w_style,
+                            "loss/tv": w_tv,
+                            "loss/raw_content": content_loss.item(),
+                            "loss/raw_style": style_loss.item(),
+                            "loss/raw_tv": tv_loss.item(),
+                            "training/learning_rate": optimizer.param_groups[0]["lr"],
+                            "training/global_step": global_step,
+                            "training/grad_norm": grad_norm.item(),
+                            "training/batch_time": batch_time,
+                            "weights/tv_loss": config["training"]["tv_weight"],
+                            "weights/content_loss": config["training"][
+                                "content_weight"
+                            ],
+                            "weights/style_loss": config["training"]["style_weight"],
+                        },
+                        step=global_step,
+                    )
+
+                if (global_step + 1) % image_log_every_n_steps == 0:
+                    log_val_images(global_step + 1)
+
+            # Checkpoint — only on main process
+            if is_main:
+                model_to_save = (
+                    trans_net.module if isinstance(trans_net, DDP) else trans_net
+                )
+                checkpoint = {
+                    "epoch": epoch,
+                    "model_state_dict": model_to_save.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "loss": total_loss.item(),
+                }
+                torch.save(checkpoint, checkpoint_dir / f"checkpoint_{epoch}.pth")
+                logger.info(
+                    "Epoch %d complete | loss=%.4f | saved to %s",
+                    epoch + 1,
+                    total_loss.item(),
+                    checkpoint_dir / f"checkpoint_{epoch}.pth",
+                )
+
+    # Log final validation images after training completes
+    log_val_images(num_steps)
+
+    if is_main:
+        model_to_save = trans_net.module if isinstance(trans_net, DDP) else trans_net
+        weights_final = model_to_save.state_dict()
+        torch.save(weights_final, config["training"]["final_model_path"])
+        wandb.finish()
+
+    if distributed:
+        dist.destroy_process_group()
 
 
 def main() -> None:
+    setup_logging()
     args = parse_args()
     config = load_config(args.config)
+
+    # Init DDP if launched via torchrun (RANK env var is set)
+    if "RANK" in os.environ:
+        dist.init_process_group(backend="nccl")
+
     train(config, resume_path=args.resume)
 
 

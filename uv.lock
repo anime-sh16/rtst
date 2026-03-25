@@ -2043,6 +2043,7 @@ dependencies = [
     { name = "torch" },
     { name = "torchao" },
     { name = "torchvision" },
+    { name = "tqdm" },
     { name = "wandb" },
 ]
 
@@ -2061,6 +2062,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.10.0" },
     { name = "torchao", specifier = ">=0.9.0" },
     { name = "torchvision", specifier = ">=0.25.0" },
+    { name = "tqdm", specifier = ">=4.67.3" },
     { name = "wandb", specifier = ">=0.25.1" },
 ]
 

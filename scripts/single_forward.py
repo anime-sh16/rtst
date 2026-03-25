@@ -1,17 +1,3 @@
-"""
-Single forward pass diagnostic script.
-
-Runs one forward pass through TransformationNetwork + LossNetwork and prints
-the raw (unweighted) loss values. Use this to decide the order of magnitude
-for content_weight, style_weight, and tv_weight before starting a full run.
-
-Usage:
-    uv run python scripts/single_forward.py \
-        --content data/coco/test1000 \
-        --style data/styles/starry_night.jpg \
-        --image-size 256
-"""
-
 import argparse
 from pathlib import Path
 

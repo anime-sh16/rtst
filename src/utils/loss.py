@@ -38,12 +38,12 @@ def compute_style_loss(
     Returns:
         Scalar loss tensor.
     """
-    loss = sum(
-        nn.functional.mse_loss(
-            gram_matrix(generated_features[k]), style_gram_targets[k]
+    loss = torch.tensor(0.0, device=next(iter(generated_features.values())).device)
+    for k in generated_features:
+        gen_gram = gram_matrix(generated_features[k])
+        loss = loss + nn.functional.mse_loss(
+            gen_gram, style_gram_targets[k].expand_as(gen_gram)
         )
-        for k in generated_features
-    )
 
     return loss
 

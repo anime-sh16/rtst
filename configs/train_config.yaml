@@ -1,9 +1,10 @@
 
 data:
-  content_dir: "data/coco/train2017"     # Path to MS COCO train images
+  content_dir: "/kaggle/input/datasets/awsaf49/coco-2017-dataset/coco2017/train2017"     # Path to MS COCO train images
   style_path:  "data/styles/mosaic.jpg" # Path to style image
+  validation_dir: "data/validation"   # Path to validation samples
   image_size:   256                       # Input/output resolution
-  batch_size:   2
+  batch_size:   24
   num_workers:  2
 
 model:
@@ -13,18 +14,21 @@ model:
   norm_type: "instance"
 
 training:
-  epochs:        2
+  epochs:        1
   learning_rate: 1.0e-3
 
-  content_weight: 5.0e+0
-  style_weight:   1.0e+3
-  tv_weight:      1.0e+1
+  content_weight: 5.0
+  style_weight:   5.0e+4
+  tv_weight:      0.0
+
+  scheduler:
+    type: "cosine"
+    eta_min: 1.0e-6
 
   checkpoint_dir: "models/checkpoints"
   final_model_path: "models/fast-nst.pth"
 
 wandb:
-  project:    "fast-nst"
-  run_name:   "diagnostic-1"
-  log_every_n_steps:       50
-  image_log_every_n_steps: 200
+  project:    "configure-nst"
+  run_name:   "kaggle-run"
+  log_every_n_steps: 50

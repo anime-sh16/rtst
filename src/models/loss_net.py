@@ -31,7 +31,7 @@ class LossNetwork(nn.Module):
         self.style_layers = style_layers
         self._required_layers = set(content_layers) | set(style_layers)
 
-        self.vgg16 = model
+        self.vgg16 = model.features[:23]
         self.vgg16.requires_grad_(False)
         self.vgg16.eval()
         self.layer_map = {
@@ -67,7 +67,7 @@ class LossNetwork(nn.Module):
             layer_index = self.layer_map.get(layer_name, None)
             if layer_index is None:
                 raise ValueError(f"Invalid layer name: {layer_name}")
-            layer = self.vgg16.features[int(layer_index)]
+            layer = self.vgg16[int(layer_index)]
             handle = layer.register_forward_hook(
                 lambda module, input, output, name=layer_name: (
                     self.extracted_layers.update({name: output})
@@ -91,7 +91,7 @@ class LossNetwork(nn.Module):
         Returns:
             LossFeatures with two dicts: {layer_name → feature_tensor}.
         """
-        self.vgg16.features(x)
+        self.vgg16(x)
         content = {}
         style = {}
         res = self.extracted_layers.copy()
