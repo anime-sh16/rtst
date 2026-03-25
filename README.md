@@ -4,7 +4,7 @@ A PyTorch reimplementation of [*Perceptual Losses for Real-Time Style Transfer a
 
 The goal is to train a feed-forward transformer network that applies artistic style to arbitrary images in a single forward pass, then deploy the trained model on Android via ExecuTorch.
 
-> **Status:** Initial development — core modules implemented, no training runs yet.
+> **Status:** Training complete — trained model available at `models/fast-nst.pth`.
 
 ## Architecture
 
@@ -32,7 +32,7 @@ During training, the transformer net learns to minimize a weighted combination o
 │   │   ├── gram.py               # Gram matrix computation
 │   │   ├── loss.py               # Perceptual loss functions
 │   │   └── image.py              # Image I/O and transforms
-│   ├── train.py                  # Training loop with W&B logging
+│   ├── train.py                  # Training loop with DDP & W&B logging
 │   ├── inference.py              # Single-image stylization
 │   └── export.py                 # Model export (TorchScript / ONNX)
 ├── tests/                        # Unit tests (pytest)
@@ -63,8 +63,20 @@ uv sync --all-extras
 ## Usage
 
 **Training** (requires MS COCO dataset):
+
+Single GPU:
 ```bash
 uv run python src/train.py --config configs/train_config.yaml
+```
+
+Multi-GPU with DDP via `torchrun`:
+```bash
+uv run torchrun --nproc_per_node=<NUM_GPUS> src/train.py --config configs/train_config.yaml
+```
+
+Resume from checkpoint:
+```bash
+uv run torchrun --nproc_per_node=<NUM_GPUS> src/train.py --config configs/train_config.yaml --resume models/checkpoints/checkpoint_0.pth
 ```
 
 **Inference** (requires trained weights):
