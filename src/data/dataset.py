@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from src.utils.image import load_image
 
 
@@ -45,15 +45,29 @@ def build_dataloader(
     batch_size: int,
     num_workers: int = 4,
     shuffle: bool = True,
-) -> DataLoader:
-    """Convenience factory that wires COCODataset into a DataLoader."""
+    distributed: bool = False,
+) -> tuple[DataLoader, DistributedSampler | None]:
+    """Convenience factory that wires COCODataset into a DataLoader.
+
+    Returns:
+        A tuple of (DataLoader, sampler). The sampler is non-None only when
+        ``distributed=True``; callers must call ``sampler.set_epoch(epoch)``
+        each epoch to ensure proper shuffling.
+    """
     dataset = COCODataset(root=root, image_size=image_size)
+
+    sampler: DistributedSampler | None = None
+    if distributed:
+        sampler = DistributedSampler(dataset, shuffle=shuffle)
+        shuffle = False  # sampler handles shuffling
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,  # when using BatchNorm2d, batch size should be preferably even
         persistent_workers=num_workers > 0,
-    )
+    ), sampler

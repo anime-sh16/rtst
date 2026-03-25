@@ -4,8 +4,8 @@ data:
   style_path:  "data/styles/mosaic.jpg" # Path to style image
   validation_dir: "data/validation"   # Path to validation samples
   image_size:   256                       # Input/output resolution
-  batch_size:   44
-  num_workers:  8
+  batch_size:   24
+  num_workers:  2
 
 model:
   # Norm layer used inside ResidualBlock, Downsample, Upsample.

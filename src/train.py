@@ -10,18 +10,18 @@ from src.utils.image import (
     load_image,
     normalize,
     denormalize,
-    get_device,
     IMAGENET_MEAN_RESHAPED,
     IMAGENET_STD_RESHAPED,
 )
 from src.utils.gram import gram_matrix
 from src.utils.loss import compute_content_loss, compute_style_loss, compute_tv_loss
 from src.data.dataset import build_dataloader
-from torch.utils.data import DataLoader
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision import models
 import wandb
 import yaml
@@ -71,11 +71,21 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         config:      Parsed YAML config dictionary.
         resume_path: Optional path to a checkpoint .pth file to resume training from.
     """
-    device = get_device()
+    # DDP setup — torchrun sets these env vars automatically
+    distributed = dist.is_initialized()
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    is_main = local_rank == 0
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device("cpu")
+
     img_mean = IMAGENET_MEAN_RESHAPED.to(device)
     img_std = IMAGENET_STD_RESHAPED.to(device)
 
-    logger.info("Device: %s", device)
+    logger.info("Device: %s (rank %d, distributed=%s)", device, local_rank, distributed)
     logger.info(
         "Training: epochs=%d, batch_size=%d, lr=%s",
         config["training"]["epochs"],
@@ -84,12 +94,13 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     )
     logger.info("Style image: %s", config["data"]["style_path"])
 
-    # W&B setup
-    wandb.init(
-        project=config["wandb"]["project"],
-        name=config["wandb"]["run_name"],
-        config=config,
-    )
+    # W&B setup — only on main process to avoid duplicate logging
+    if is_main:
+        wandb.init(
+            project=config["wandb"]["project"],
+            name=config["wandb"]["run_name"],
+            config=config,
+        )
 
     # Model setup
     norm_type = (
@@ -113,11 +124,12 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         style_target_features.update({key: gram_matrix(value.detach())})
 
     # DataLoader
-    dataloader: DataLoader = build_dataloader(
+    dataloader, sampler = build_dataloader(
         root=config["data"]["content_dir"],
         image_size=config["data"]["image_size"],
         batch_size=config["data"]["batch_size"],
         num_workers=config["data"]["num_workers"],
+        distributed=distributed,
     )
 
     # Optimizer
@@ -148,10 +160,10 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         start_epoch = checkpoint["epoch"] + 1
 
-    # Wrap with DataParallel after loading checkpoint (clean keys)
-    if torch.cuda.device_count() > 1:
-        logger.info("Using %d GPUs with DataParallel", torch.cuda.device_count())
-        trans_net = nn.DataParallel(trans_net)
+    # Wrap with DDP after loading checkpoint (clean keys)
+    if distributed:
+        logger.info("Using DDP on rank %d", local_rank)
+        trans_net = DDP(trans_net, device_ids=[local_rank])
 
     # Pre-load the validation image samples for logging
     val_images = [
@@ -161,11 +173,10 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     ]
 
     def log_val_images(global_step: int) -> None:
-        """Run validation images through the model and log to W&B."""
-        # Use unwrapped model for single-image inference (avoids NCCL errors with DataParallel)
-        raw_model = (
-            trans_net.module if isinstance(trans_net, nn.DataParallel) else trans_net
-        )
+        """Run validation images through the model and log to W&B (main process only)."""
+        if not is_main:
+            return
+        raw_model = trans_net.module if isinstance(trans_net, DDP) else trans_net
         raw_model.eval()
         with torch.no_grad():
             for val_idx, val_image in enumerate(val_images):
@@ -185,10 +196,13 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     image_log_every_n_steps = max(1, num_steps // 10)
     with loss_net as extractor:
         for epoch in range(start_epoch, config["training"]["epochs"]):
+            if sampler is not None:
+                sampler.set_epoch(epoch)
             pbar = tqdm(
                 enumerate(dataloader),
                 total=len(dataloader),
                 desc=f"Epoch {epoch + 1}/{config['training']['epochs']}",
+                disable=not is_main,
             )
             for step, content_images in pbar:
                 step_start = time.monotonic()
@@ -241,7 +255,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                     tv=f"{w_tv:.4f}",
                 )
 
-                if step % config["wandb"]["log_every_n_steps"] == 0:
+                if is_main and step % config["wandb"]["log_every_n_steps"] == 0:
                     wandb.log(
                         {
                             "loss/total": total_loss.item(),
@@ -267,43 +281,48 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                 if (global_step + 1) % image_log_every_n_steps == 0:
                     log_val_images(global_step + 1)
 
-            # Checkpoint — unwrap DataParallel if present
-            model_to_save = (
-                trans_net.module
-                if isinstance(trans_net, nn.DataParallel)
-                else trans_net
-            )
-            checkpoint = {
-                "epoch": epoch,
-                "model_state_dict": model_to_save.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict(),
-                "loss": total_loss.item(),
-            }
-            torch.save(checkpoint, checkpoint_dir / f"checkpoint_{epoch}.pth")
-            logger.info(
-                "Epoch %d complete | loss=%.4f | saved to %s",
-                epoch + 1,
-                total_loss.item(),
-                checkpoint_dir / f"checkpoint_{epoch}.pth",
-            )
+            # Checkpoint — only on main process
+            if is_main:
+                model_to_save = (
+                    trans_net.module if isinstance(trans_net, DDP) else trans_net
+                )
+                checkpoint = {
+                    "epoch": epoch,
+                    "model_state_dict": model_to_save.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "loss": total_loss.item(),
+                }
+                torch.save(checkpoint, checkpoint_dir / f"checkpoint_{epoch}.pth")
+                logger.info(
+                    "Epoch %d complete | loss=%.4f | saved to %s",
+                    epoch + 1,
+                    total_loss.item(),
+                    checkpoint_dir / f"checkpoint_{epoch}.pth",
+                )
 
     # Log final validation images after training completes
     log_val_images(num_steps)
 
-    model_to_save = (
-        trans_net.module if isinstance(trans_net, nn.DataParallel) else trans_net
-    )
-    weights_final = model_to_save.state_dict()
-    torch.save(weights_final, config["training"]["final_model_path"])
+    if is_main:
+        model_to_save = trans_net.module if isinstance(trans_net, DDP) else trans_net
+        weights_final = model_to_save.state_dict()
+        torch.save(weights_final, config["training"]["final_model_path"])
+        wandb.finish()
 
-    wandb.finish()
+    if distributed:
+        dist.destroy_process_group()
 
 
 def main() -> None:
     setup_logging()
     args = parse_args()
     config = load_config(args.config)
+
+    # Init DDP if launched via torchrun (RANK env var is set)
+    if "RANK" in os.environ:
+        dist.init_process_group(backend="nccl")
+
     train(config, resume_path=args.resume)
 
 
