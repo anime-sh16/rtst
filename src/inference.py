@@ -28,15 +28,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=Path,
-        default=Path("models/fast-nst.pth"),
+        default=Path("models/training/fast-nst.pth"),
         help="Path to .pth weights file.",
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("data/results"))
+    parser.add_argument("--output-dir", type=Path, default=Path("data/results/ecport1"))
     parser.add_argument(
         "--config", type=Path, default=Path("configs/train_config.yaml")
     )
     parser.add_argument("--image-size", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--export-mode", type=bool, default=True)
     parser.add_argument(
         "--keep-aspect",
         action="store_true",
@@ -46,7 +47,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_model(
-    config_path: Path, weights_path: Path, device: torch.device
+    config_path: Path, weights_path: Path, device: torch.device, export_mode: bool
 ) -> TransformationNetwork:
     """Load config, build TransformationNetwork, load weights, return in eval mode."""
     config = load_config(config_path)
@@ -55,7 +56,7 @@ def build_model(
         if config["model"]["norm_type"] == "instance"
         else nn.BatchNorm2d
     )
-    trans_net = TransformationNetwork(norm_type)
+    trans_net = TransformationNetwork(norm_type, export_mode)
     state_dict = torch.load(weights_path, map_location=device)
     trans_net.load_state_dict(state_dict)
     trans_net.to(device)
@@ -122,7 +123,7 @@ def main() -> None:
     device = get_device()
     output_dir = args.output_dir
 
-    model = build_model(args.config, args.model, device)
+    model = build_model(args.config, args.model, device, args.export_mode)
 
     if args.image.is_dir():
         image_paths = collect_images(args.image)
