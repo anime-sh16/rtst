@@ -1,0 +1,18 @@
+# Model
+checkpoint_path: "models/checkpoints/fast-nst-mosaic.pth"   # path to trained .pth weights
+norm_type: "in"          # "in" (InstanceNorm) | "bn" (BatchNorm)
+style_name: "mosaic"     # used in output filenames
+
+# Export
+backend: "xnnpack"          # "xnnpack" | "vulkan" | "cpu"
+quantize: false             # true → int8 PTQ via torchao (not yet implemented)
+input_size: 256             # spatial resolution H = W
+keep_aspect: false          # true → variable aspect ratio (not yet implemented)
+export_mode: true           # true → zero-padding + bilinear upsample (export-safe ops)
+
+# Validation
+cosine_similarity_threshold: 0.99   # host validation pass/fail cutoff
+
+# Paths
+export_dir: "exports"       # directory for .pte + .json sidecar
+results_dir: "results"      # directory for validation & benchmark outputs
