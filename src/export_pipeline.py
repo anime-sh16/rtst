@@ -123,6 +123,90 @@ def compute_checkpoint_hash(path: str) -> str:
     return h.hexdigest()[:16]
 
 
+def analyze_delegation(edge_program) -> dict:
+    """
+    Walk the graph of a lowered EdgeProgramManager and count ops
+    delegated to each backend vs. CPU fallback.
+
+    Returns dict with:
+        total_ops, delegated_ops_total, cpu_fallback_ops_total,
+        delegation_pct, backend_details (dict of backend->ops->count),
+        cpu_op_names (dict of op->count)
+    """
+    graph_module = edge_program.exported_program().graph_module
+
+    result = {
+        "total_ops": 0,
+        "delegated_ops_total": 0,
+        "cpu_fallback_ops_total": 0,
+        "delegation_pct": 0.0,
+        "backend_details": {},
+        "cpu_op_names": {},
+    }
+
+    for node in graph_module.graph.nodes:
+        # Skip pure IO/memory nodes in the main graph
+        if node.op in ["placeholder", "output", "get_attr"]:
+            continue
+
+        # 1. HANDLE DELEGATED OPS
+        if (
+            node.op == "call_function"
+            and getattr(node.target, "__name__", "") == "executorch_call_delegate"
+        ):
+            lowered_module_node = node.args[0]
+            lowered_module = getattr(graph_module, lowered_module_node.target)
+            backend_id = lowered_module.backend_id
+
+            if backend_id not in result["backend_details"]:
+                result["backend_details"][backend_id] = {}
+
+            subgraph = lowered_module.original_module.graph_module.graph
+
+            for sub_node in subgraph.nodes:
+                if sub_node.op in ["placeholder", "output", "get_attr"]:
+                    continue
+
+                # Standardize op name
+                op_name = (
+                    getattr(sub_node.target, "__name__", str(sub_node.target))
+                    if sub_node.op == "call_function"
+                    else (
+                        sub_node.target if sub_node.op == "call_method" else sub_node.op
+                    )
+                )
+
+                # Tally delegated op
+                result["backend_details"][backend_id][op_name] = (
+                    result["backend_details"][backend_id].get(op_name, 0) + 1
+                )
+                result["delegated_ops_total"] += 1
+
+        # 2. HANDLE CPU FALLBACK OPS
+        else:
+            # Standardize op name
+            op_name = (
+                getattr(node.target, "__name__", str(node.target))
+                if node.op == "call_function"
+                else (node.target if node.op == "call_method" else node.op)
+            )
+
+            # Tally CPU op
+            result["cpu_op_names"][op_name] = result["cpu_op_names"].get(op_name, 0) + 1
+            result["cpu_fallback_ops_total"] += 1
+
+    # 3. CALCULATE TOTALS AND PERCENTAGE
+    result["total_ops"] = (
+        result["delegated_ops_total"] + result["cpu_fallback_ops_total"]
+    )
+    if result["total_ops"] > 0:
+        result["delegation_pct"] = round(
+            (result["delegated_ops_total"] / result["total_ops"]) * 100, 2
+        )
+
+    return result
+
+
 def export_model(cfg: ExportConfig):
     """
     TODO: Add the keep aspect flag usage for the dimension range to `export()`
@@ -137,14 +221,16 @@ def export_model(cfg: ExportConfig):
     from executorch.backends.xnnpack.partition.xnnpack_partitioner import (
         XnnpackPartitioner,
     )
-    from executorch.backends.vulkan.partition.vulkan_partitioner import (
+    from executorch.backends.vulkan.partitioner.vulkan_partitioner import (
         VulkanPartitioner,
     )
 
     norm_type = (
         nn.InstanceNorm2d if cfg.norm_type == NormType.INSTANCE else nn.BatchNorm2d
     )
-    model = TransformationNetwork(norm_type=norm_type, export_mode=cfg.export_mode)
+    model = TransformationNetwork(
+        norm_layer_type=norm_type, export_mode=cfg.export_mode
+    )
     model.load_state_dict(torch.load(cfg.checkpoint_path, map_location="cpu"))
     model.eval()
 
@@ -177,6 +263,8 @@ def export_model(cfg: ExportConfig):
         logger.error("[export] Quantization not supported yet. Please use fp32.")
         raise NotImplementedError
 
+    delegate_analysis = analyze_delegation(edge)
+
     et_program = edge.to_executorch()
 
     etrecord = et_program.get_etrecord()
@@ -192,7 +280,6 @@ def export_model(cfg: ExportConfig):
     size_mb = cfg.pte_path.stat().st_size / 1024 / 1024
     logger.info(f"[export] Exported: {cfg.pte_path} ({size_mb:.2f} MB)")
 
-    # Write sidecar (do this AFTER successful export)
     from importlib.metadata import version
 
     ckpt_hash = compute_checkpoint_hash(cfg.checkpoint_path)
@@ -205,12 +292,7 @@ def export_model(cfg: ExportConfig):
         "pytorch_version": str(torch.__version__),
         "input_shape": [1, 3, cfg.input_size, cfg.input_size],
         "output_shape": [1, 3, cfg.input_size, cfg.input_size],
-        "export_mode": cfg.export_mode,
-        "norm_type": cfg.norm_type.value,
-        "backend": cfg.backend.value,
-        "quantize": cfg.quantize,
-        "keep_aspect": cfg.keep_aspect,
-        "cosine_similarity_threshold": cfg.cosine_similarity_threshold,
+        "delegation_analysis": delegate_analysis,
     }
     # Enum serialization fix
     sidecar["config"]["norm_type"] = cfg.norm_type.value
