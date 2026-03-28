@@ -74,7 +74,9 @@ class ExportConfig:
     # Export
     backend: Backend  # "xnnpack", "vulkan", "cpu"
     quantize: bool = False  # whether to apply ptq via torchao
-    input_size: int = 256
+    # input_size: int | None = 256
+    input_h: int = 256
+    input_w: int = 256
     keep_aspect: bool = False
     export_mode: bool = True  # Using export mode changes the reflection tp zero padding and nearest to bilinear upsampling
 
@@ -89,7 +91,7 @@ class ExportConfig:
     def tag(self) -> str:
         """Unique tag encoding this config. Used for filenames."""
         q = "int8" if self.quantize else "fp32"
-        return f"johnson_{self.norm_type.value}_{self.style_name}_{self.backend.value}_{q}_{self.input_size}{'_aspect' if self.keep_aspect else '_square'}{'_export_mode' if self.export_mode else ''}"
+        return f"johnson_{self.norm_type.value}_{self.style_name}_{self.backend.value}_{q}_{self.input_h}x{self.input_w}{'_aspect' if self.keep_aspect else ''}{'_export_mode' if self.export_mode else ''}"
 
     @property
     def pte_path(self) -> Path:
@@ -242,7 +244,7 @@ def export_model(cfg: ExportConfig):
         )
         raise NotImplementedError
 
-    example_input = (torch.randn(1, 3, cfg.input_size, cfg.input_size),)
+    example_input = (torch.randn(1, 3, cfg.input_h, cfg.input_w),)
     exported = torch.export.export(model, example_input)
 
     partitioner = {
@@ -290,8 +292,8 @@ def export_model(cfg: ExportConfig):
         "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "executorch_version": str(version("executorch")),
         "pytorch_version": str(torch.__version__),
-        "input_shape": [1, 3, cfg.input_size, cfg.input_size],
-        "output_shape": [1, 3, cfg.input_size, cfg.input_size],
+        "input_shape": [1, 3, cfg.input_h, cfg.input_w],
+        "output_shape": [1, 3, cfg.input_h, cfg.input_w],
         "delegation_analysis": delegate_analysis,
     }
     # Enum serialization fix
@@ -309,13 +311,21 @@ def export_model(cfg: ExportConfig):
 #    Run .pte on desktop, compare vs PyTorch.
 
 
-def load_test_image(path: str, size: int, keep_aspect: bool) -> torch.Tensor:
+def load_test_image(
+    path: str, h: int, w: int | None, keep_aspect: bool | None
+) -> torch.Tensor:
     """
     Load an image from disk into a normalised tensor (1, C, H, W).
     """
-    from src.utils.image import load_image
+    if keep_aspect:
+        from src.utils.image import load_image
 
-    img = load_image(path, size, keep_aspect)
+        img = load_image(path, size=min(h, w), keep_aspect=True)
+    else:
+        from src.utils.image import load_image_h_w
+
+        img = load_image_h_w(path, h, w)
+
     img = img.unsqueeze(0)
     return img
 
@@ -330,14 +340,15 @@ def validate_on_host(pte_path: str, ref_image_path: str):
         sidecar = json.load(f)
 
     cfg = sidecar["config"]
-    size, keep_aspect, export_mode = (
-        cfg["input_size"],
+    h, w, keep_aspect, export_mode = (
+        cfg["input_h"],
+        cfg["input_w"],
         cfg["keep_aspect"],
         cfg["export_mode"],
     )
 
     logger.info(f"[validate] Loading test image: {ref_image_path}")
-    test_input = load_test_image(ref_image_path, size, keep_aspect)
+    test_input = load_test_image(ref_image_path, h, w, keep_aspect)
 
     # Run PyTorch reference
     from src.models.trans_net import TransformationNetwork

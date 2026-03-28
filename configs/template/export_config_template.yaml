@@ -6,7 +6,8 @@ style_name: "mosaic"     # used in output filenames
 # Export
 backend: "xnnpack"          # "xnnpack" | "vulkan" | "cpu"
 quantize: false             # true → int8 PTQ via torchao (not yet implemented)
-input_size: 256             # spatial resolution H = W
+input_h: 256                # spatial resolution H
+input_w: 256                # spatial resolution W
 keep_aspect: false          # true → variable aspect ratio (not yet implemented)
 export_mode: true           # true → zero-padding + bilinear upsample (export-safe ops)
 
