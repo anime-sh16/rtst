@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
         default=Path("models/training/fast-nst.pth"),
         help="Path to .pth weights file.",
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("data/results/ecport1"))
+    parser.add_argument("--output-dir", type=Path, default=Path("data/results/bn-bl"))
     parser.add_argument(
         "--config", type=Path, default=Path("configs/train_config.yaml")
     )

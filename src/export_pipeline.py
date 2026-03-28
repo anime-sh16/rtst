@@ -95,11 +95,11 @@ class ExportConfig:
 
     @property
     def pte_path(self) -> Path:
-        return Path(self.export_dir) / f"{self.tag}.pte"
+        return Path(self.export_dir) / f"{self.tag}" / f"{self.tag}.pte"
 
     @property
     def sidecar_path(self) -> Path:
-        return Path(self.export_dir) / f"{self.tag}.json"
+        return Path(self.export_dir) / f"{self.tag}" / f"{self.tag}.json"
 
     @staticmethod
     def from_yaml(path: str) -> "ExportConfig":
@@ -213,7 +213,7 @@ def export_model(cfg: ExportConfig):
     """
     TODO: Add the keep aspect flag usage for the dimension range to `export()`
     """
-    Path(cfg.export_dir).mkdir(parents=True, exist_ok=True)
+    Path(cfg.pte_path.parent).mkdir(parents=True, exist_ok=True)
 
     logger.info(f"[export] Loading checkpoint: {cfg.checkpoint_path}")
     logger.info(f"[export] Config tag: {cfg.tag}")
@@ -353,7 +353,13 @@ def validate_on_host(pte_path: str, ref_image_path: str):
     # Run PyTorch reference
     from src.models.trans_net import TransformationNetwork
 
-    model = TransformationNetwork(norm_type=cfg["norm_type"], export_mode=export_mode)
+    norm_type = (
+        nn.InstanceNorm2d
+        if NormType(cfg["norm_type"]) == NormType.INSTANCE
+        else nn.BatchNorm2d
+    )
+
+    model = TransformationNetwork(norm_layer_type=norm_type, export_mode=export_mode)
     model.load_state_dict(torch.load(cfg["checkpoint_path"], map_location="cpu"))
     model.eval()
     with torch.no_grad():
@@ -365,16 +371,15 @@ def validate_on_host(pte_path: str, ref_image_path: str):
     runtime = Runtime.get()
     program = runtime.load_program(pte_path)
     method = program.load_method("forward")
-    et_output = method.execute([test_input.numpy()])
-    et_output = torch.from_numpy(et_output[0])
+    et_output = method.execute([test_input])
 
     # Compare
     cos_sim = torch.nn.functional.cosine_similarity(
-        ref_output.flatten().unsqueeze(0), et_output.flatten().unsqueeze(0)
+        ref_output.flatten().unsqueeze(0), et_output[0].flatten().unsqueeze(0)
     ).item()
 
-    l2_diff = torch.norm(ref_output - et_output).item()
-    linf_diff = torch.max(torch.abs(ref_output - et_output)).item()
+    l2_diff = torch.norm(ref_output - et_output[0]).item()
+    linf_diff = torch.max(torch.abs(ref_output - et_output[0])).item()
 
     result = {
         "pte": pte_path,
@@ -392,11 +397,20 @@ def validate_on_host(pte_path: str, ref_image_path: str):
     )
 
     # Save validation result
-    val_dir = Path("results") / "host_validation"
+    val_dir = Path("results") / "host_validation" / f"{sidecar['tag']}"
     val_dir.mkdir(parents=True, exist_ok=True)
     out_path = val_dir / f"{sidecar['tag']}_validation.json"
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)
+
+    logger.info(f"[validate] Validation result written: {out_path}")
+
+    from src.utils.image import save_image
+
+    save_image(ref_output[0], val_dir / f"{sidecar['tag']}_ref.png")
+    save_image(et_output[0], val_dir / f"{sidecar['tag']}_et.png")
+
+    logger.info(f"[validate] Validation images written: {val_dir}")
 
     return result
 
@@ -543,6 +557,15 @@ def main():
         "--ref-input", required=True, help="Path to reference test image"
     )
 
+    # export and validate
+    p_e_v = sub.add_parser("export-and-val", help="Export and validate .pte on host")
+    p_e_v.add_argument(
+        "--config", required=True, help="Path to export YAML config file"
+    )
+    p_e_v.add_argument(
+        "--ref-input", required=True, help="Path to reference test image"
+    )
+
     # device-bench
     p_dev = sub.add_parser(
         "device-bench", help="Benchmark .pte on Android device via adb"
@@ -594,6 +617,11 @@ def main():
 
     elif args.command == "validate":
         validate_on_host(args.pte, args.ref_input)
+
+    elif args.command == "export-and-val":
+        cfg = ExportConfig.from_yaml(args.config)
+        pte = export_model(cfg)
+        validate_on_host(str(pte), args.ref_input)
 
     elif args.command == "device-bench":
         device_benchmark(args.pte, args.ref_input, args.device_id, args.n_iters)
