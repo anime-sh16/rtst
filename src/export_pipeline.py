@@ -101,6 +101,10 @@ class ExportConfig:
     def sidecar_path(self) -> Path:
         return Path(self.export_dir) / f"{self.tag}" / f"{self.tag}.json"
 
+    @property
+    def debug_path(self) -> Path:
+        return Path(self.results_dir) / "debug" / f"{self.tag}"
+
     @staticmethod
     def from_yaml(path: str) -> "ExportConfig":
         """Load config from YAML file."""
@@ -333,7 +337,7 @@ def load_test_image(
 def validate_on_host(pte_path: str, ref_image_path: str):
     """
     Compare .pte output vs original PyTorch model output on the same input.
-    Requires executorch runtime built for host (pip install executorch).
+    Uses the C++ runner (cpp_eval/build/rtst) in validate mode.
     """
     sidecar_path = pte_path.replace(".pte", ".json")
     with open(sidecar_path) as f:
@@ -365,21 +369,48 @@ def validate_on_host(pte_path: str, ref_image_path: str):
     with torch.no_grad():
         ref_output = model(test_input)
 
-    # Run ExecuTorch
-    from executorch.runtime import Runtime
+    CPP_RUNNER = Path("cpp_eval/build/rtst")
 
-    runtime = Runtime.get()
-    program = runtime.load_program(pte_path)
-    method = program.load_method("forward")
-    et_output = method.execute([test_input])
+    import tempfile
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        input_bin = Path(tmp_dir) / "input.bin"
+        output_bin = Path(tmp_dir) / "output.bin"
+
+        test_input.contiguous().numpy().tofile(input_bin)
+
+        try:
+            result = subprocess.run(
+                [
+                    str(CPP_RUNNER),
+                    "validate",
+                    pte_path,
+                    str(input_bin),
+                    str(output_bin),
+                    str(h),
+                    str(w),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.info(f"[validate] C++ runner: {result.stdout.strip()}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"[validate] C++ runner failed:\n{e.stderr.strip()}")
+            raise
+
+        et_output = torch.from_numpy(
+            np.fromfile(output_bin, dtype=np.float32).reshape(1, 3, h, w)
+        )
 
     # Compare
     cos_sim = torch.nn.functional.cosine_similarity(
-        ref_output.flatten().unsqueeze(0), et_output[0].flatten().unsqueeze(0)
+        ref_output.flatten().unsqueeze(0), et_output.flatten().unsqueeze(0)
     ).item()
 
-    l2_diff = torch.norm(ref_output - et_output[0]).item()
-    linf_diff = torch.max(torch.abs(ref_output - et_output[0])).item()
+    l2_diff = torch.norm(ref_output - et_output).item()
+    linf_diff = torch.max(torch.abs(ref_output - et_output)).item()
 
     result = {
         "pte": pte_path,
