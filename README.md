@@ -4,7 +4,7 @@ A PyTorch reimplementation of [*Perceptual Losses for Real-Time Style Transfer a
 
 The goal is to train a feed-forward transformer network that applies artistic style to arbitrary images in a single forward pass, then deploy the trained model on Android via ExecuTorch.
 
-> **Status:** Training complete — trained model available at `models/fast-nst.pth`.
+> **Status:** Training complete, ExecuTorch export pipeline working. All model variants validated on host (cosine similarity > 0.9999).
 
 ## Architecture
 
@@ -37,6 +37,9 @@ During training, the transformer net learns to minimize a weighted combination o
 │   ├── train.py                    # Training loop with DDP & W&B logging
 │   ├── inference.py                # Single/batch image stylization
 │   └── export_pipeline.py          # ExecuTorch export, validation & device benchmarking
+├── cpp_eval/
+│   ├── CMakeLists.txt              # CMake config (links ExecuTorch, XNNPACK, OpenCV)
+│   └── main.cpp                    # C++ runner: infer (image→image) & validate (tensor→tensor)
 ├── scripts/                        # Utility scripts (analysis, benchmarks)
 ├── tests/                          # Unit tests (pytest)
 ├── data/                           # data images for training, inference and benchmarking
@@ -68,7 +71,7 @@ uv sync --all-extras
 
 ## Usage
 
-**Training** (requires MS COCO dataset):
+### **Training** (requires MS COCO dataset):
 
 Single GPU:
 ```bash
@@ -85,7 +88,7 @@ Resume from checkpoint:
 uv run torchrun --nproc_per_node=<NUM_GPUS> src/train.py --config configs/train_config.yaml --resume models/checkpoints/checkpoint_0.pth
 ```
 
-**Inference** (uses `models/fast-nst.pth` by default):
+### **Inference** (uses `models/fast-nst.pth` by default):
 
 Single image:
 ```bash
@@ -104,7 +107,7 @@ uv run python src/inference.py --image path/to/dir/ --image-size 512 --keep-aspe
 
 Results are saved to `data/results/` by default (override with `--output-dir`).
 
-**Export for mobile** (config-driven, requires trained weights):
+### **Export for mobile** (config-driven, requires trained weights):
 
 Create a config from the template:
 ```bash
@@ -117,7 +120,7 @@ Export only:
 uv run python src/export_pipeline.py export --config configs/export/mosaic_xnnpack.yaml
 ```
 
-Validate exported `.pte` against PyTorch on host:
+Validate exported `.pte` against PyTorch on host (uses C++ runner under the hood):
 ```bash
 uv run python src/export_pipeline.py validate --pte exports/<tag>.pte --ref-input data/test_inference/flower.jpg
 ```
@@ -132,21 +135,72 @@ Aggregate all device benchmark results into a comparison table:
 uv run python src/export_pipeline.py aggregate
 ```
 
+## C++ Runner (`cpp_eval/`)
+
+A standalone C++ executable for running `.pte` models on host, built against a local ExecuTorch v1.3.0 clone. Used by the export pipeline for host validation (replacing the Python ExecuTorch runtime due to a version mismatch issue).
+
+**Prerequisites:** ExecuTorch source at `/Users/animesh/Developer/open-source/executorch`, OpenCV installed via Homebrew.
+
+**Build:**
+```bash
+cd cpp_eval
+mkdir -p build && cd build
+cmake .. -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+ninja
+```
+
+**Usage:**
+
+Infer mode (image in → styled image out):
+```bash
+./cpp_eval/build/rtst infer <model.pte> <input.jpg> <output.jpg> <H> <W>
+```
+
+Validate mode (raw tensor in → raw tensor out, no image processing):
+```bash
+./cpp_eval/build/rtst validate <model.pte> <input.bin> <output.bin> <H> <W>
+```
+
+### Host Validation Results
+
+| Config | XNNPACK Delegation | Cosine Similarity | L2 | Linf |
+|---|---|---|---|---|
+| BN + XNNPACK + export_mode | 98.57% | 0.999998 | 0.0004 | 0.0000 |
+| IN + XNNPACK + export_mode | 32.5% | 0.999999 | 0.0100 | 0.0001 |
+| IN + XNNPACK + no export_mode | 32.5% | 1.000005 | 0.0108 | 0.0001 |
+
 ## Training Configuration
 
-The final model was trained on **MS COCO 2017** (~118k images) with the **mosaic** style image, using the following hyperparameters (after tuning):
+Models were trained on **MS COCO 2017** (~118k images) with the **mosaic** style image.
 
 | Parameter | Value |
 |---|---|
 | Image size | 256 × 256 |
 | Batch size | 24 (per GPU) |
-| GPU | T4 x2 (kaggle) |
+| GPU | T4 x2 (Kaggle) |
 | Epochs | 3 |
 | Learning rate | 1e-3 (cosine schedule → 1e-6) |
 | Content weight | 5.0 |
 | Style weight | 2e5 |
-| Normalization | InstanceNorm2d |
 | Optimizer | Adam |
+
+Two model variants were trained:
+
+| Variant | Normalization | Padding | Upsampling | Checkpoint |
+|---|---|---|---|---|
+| IN + nearest | InstanceNorm2d | Reflection | Nearest | `models/training/fast-nst-in-nearest.pth` |
+| BN + bilinear | BatchNorm2d | Zero | Bilinear | `models/training/fast-nst-bn-bilinear.pth` |
+
+- **IN + nearest:** Uses InstanceNorm2d (computes per-instance statistics at inference), reflection padding, and nearest-neighbor upsampling. This is the standard architecture from the original paper.
+- **BN + bilinear:** Uses BatchNorm2d (uses stored running statistics at inference), zero padding, and bilinear upsampling. Trained specifically for better mobile compatibility — BatchNorm maps to a single XNNPACK op, giving 98.57% delegation vs 32.5% for InstanceNorm.
+
+### Export Mode
+
+The `export_mode` flag in the model controls whether mobile-friendly ops are used at construction time:
+- **`export_mode: false`** (default): Reflection padding + nearest upsampling — matches training-time behavior.
+- **`export_mode: true`**: Zero padding + bilinear upsampling — both are natively supported by XNNPACK, avoiding CPU fallback for these ops.
+
+The IN model was trained with reflection padding + nearest upsampling, so `export_mode: true` swaps those ops at export time (minor quality tradeoff for better delegation). The BN model was trained with zero padding + bilinear upsampling from the start, so `export_mode: true` matches its training-time behavior exactly.
 
 Style image: `data/styles/mosaic.jpg`
 
