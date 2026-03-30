@@ -337,8 +337,13 @@ def load_test_image(
 def validate_on_host(pte_path: str, ref_image_path: str):
     """
     Compare .pte output vs original PyTorch model output on the same input.
-    Uses the C++ runner (cpp_eval/build/rtst) in validate mode.
+    Uses ExecuTorch Python Runtime API with .contiguous() workaround for
+    the channels-last stride bug.
     """
+    from executorch.runtime import Runtime, Verification
+    from src.models.trans_net import TransformationNetwork
+    from src.utils.image import save_image
+
     sidecar_path = pte_path.replace(".pte", ".json")
     with open(sidecar_path) as f:
         sidecar = json.load(f)
@@ -354,9 +359,7 @@ def validate_on_host(pte_path: str, ref_image_path: str):
     logger.info(f"[validate] Loading test image: {ref_image_path}")
     test_input = load_test_image(ref_image_path, h, w, keep_aspect)
 
-    # Run PyTorch reference
-    from src.models.trans_net import TransformationNetwork
-
+    # --- PyTorch reference inference ---
     norm_type = (
         nn.InstanceNorm2d
         if NormType(cfg["norm_type"]) == NormType.INSTANCE
@@ -369,42 +372,62 @@ def validate_on_host(pte_path: str, ref_image_path: str):
     with torch.no_grad():
         ref_output = model(test_input)
 
-    CPP_RUNNER = Path("cpp_eval/build/rtst")
+    # --- ExecuTorch Python Runtime inference ---
+    # .contiguous() is required to avoid the channels-last stride bug
+    # where the pybinding reads raw data pointers as NCHW regardless of
+    # actual tensor strides. See scripts/minimal_repro.py for details.
+    runtime = Runtime.get()
+    program = runtime.load_program(pte_path, verification=Verification.Minimal)
+    method = program.load_method("forward")
+    et_outputs = method.execute([test_input.contiguous()])
+    et_output = et_outputs[0]
 
-    import tempfile
-    import numpy as np
+    if not isinstance(et_output, torch.Tensor):
+        et_output = torch.tensor(et_output)
+    et_output = et_output.reshape(1, 3, h, w)
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        input_bin = Path(tmp_dir) / "input.bin"
-        output_bin = Path(tmp_dir) / "output.bin"
+    logger.info(
+        f"[validate] ExecuTorch output shape={et_output.shape}, "
+        f"dtype={et_output.dtype}, range=[{et_output.min():.3f}, {et_output.max():.3f}]"
+    )
 
-        test_input.contiguous().numpy().tofile(input_bin)
+    # --- C++ runner path (kept for reference / future Android host validation) ---
+    # CPP_RUNNER = Path("cpp_eval/build/rtst")
+    #
+    # import tempfile
+    # import numpy as np
+    #
+    # with tempfile.TemporaryDirectory() as tmp_dir:
+    #     input_bin = Path(tmp_dir) / "input.bin"
+    #     output_bin = Path(tmp_dir) / "output.bin"
+    #
+    #     test_input.contiguous().numpy().tofile(input_bin)
+    #
+    #     try:
+    #         result = subprocess.run(
+    #             [
+    #                 str(CPP_RUNNER),
+    #                 "validate",
+    #                 pte_path,
+    #                 str(input_bin),
+    #                 str(output_bin),
+    #                 str(h),
+    #                 str(w),
+    #             ],
+    #             check=True,
+    #             capture_output=True,
+    #             text=True,
+    #         )
+    #         logger.info(f"[validate] C++ runner: {result.stdout.strip()}")
+    #     except subprocess.CalledProcessError as e:
+    #         logger.error(f"[validate] C++ runner failed:\n{e.stderr.strip()}")
+    #         raise
+    #
+    #     et_output = torch.from_numpy(
+    #         np.fromfile(output_bin, dtype=np.float32).reshape(1, 3, h, w)
+    #     )
 
-        try:
-            result = subprocess.run(
-                [
-                    str(CPP_RUNNER),
-                    "validate",
-                    pte_path,
-                    str(input_bin),
-                    str(output_bin),
-                    str(h),
-                    str(w),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            logger.info(f"[validate] C++ runner: {result.stdout.strip()}")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"[validate] C++ runner failed:\n{e.stderr.strip()}")
-            raise
-
-        et_output = torch.from_numpy(
-            np.fromfile(output_bin, dtype=np.float32).reshape(1, 3, h, w)
-        )
-
-    # Compare
+    # --- Compare ---
     cos_sim = torch.nn.functional.cosine_similarity(
         ref_output.flatten().unsqueeze(0), et_output.flatten().unsqueeze(0)
     ).item()
@@ -420,6 +443,7 @@ def validate_on_host(pte_path: str, ref_image_path: str):
         "l2_norm_diff": l2_diff,
         "linf_diff": linf_diff,
         "pass": cos_sim > cfg["cosine_similarity_threshold"],
+        "sidecar": sidecar,
     }
 
     status = "PASS" if result["pass"] else "FAIL"
@@ -435,8 +459,6 @@ def validate_on_host(pte_path: str, ref_image_path: str):
         json.dump(result, f, indent=2)
 
     logger.info(f"[validate] Validation result written: {out_path}")
-
-    from src.utils.image import save_image
 
     save_image(ref_output[0], val_dir / f"{sidecar['tag']}_ref.png")
     save_image(et_output[0], val_dir / f"{sidecar['tag']}_et.png")
