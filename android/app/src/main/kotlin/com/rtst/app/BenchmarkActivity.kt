@@ -108,10 +108,10 @@ class BenchmarkActivity : AppCompatActivity() {
                 val outputBitmap = runner.stylize(inputBitmap)
 
                 val json = benchResult.toJson()
-                File(filesDir, "result.json").writeText(json)
-                File(File(modelPath).parent, "result.json").writeText(json)
+                File(filesDir, "bench.json").writeText(json)
+                // File(File(modelPath).parent, "result.json").writeText(json)
 
-                val outputFile = File(File(modelPath).parent, "output.jpg")
+                val outputFile = File(filesDir, "output.jpg")
                 outputFile.outputStream().use { out ->
                     outputBitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
                 }

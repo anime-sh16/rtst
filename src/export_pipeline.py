@@ -498,6 +498,40 @@ def adb(cmd: str, device_id: str | None = None) -> str:
     return r.stdout.strip()
 
 
+def _resolve_adb_path() -> str:
+    """Find the adb binary path."""
+    adb_path = shutil.which("adb")
+    if not adb_path:
+        mac_default = os.path.expanduser("~/Library/Android/sdk/platform-tools/adb")
+        if os.path.exists(mac_default):
+            adb_path = mac_default
+        else:
+            raise FileNotFoundError(
+                "Could not find 'adb'. Ensure Android Studio is installed and "
+                "the platform-tools directory exists."
+            )
+    return adb_path
+
+
+def adb_pull_from_app(
+    app_id: str, remote_path: str, local_path: str, device_id: str | None = None
+) -> None:
+    """
+    Pull a file from an app's private storage using `adb exec-out run-as <app> cat <path>`.
+
+    `exec-out` streams raw bytes (no PTY) so binary files like JPEGs stay intact.
+    The file is written locally in binary mode.
+    """
+    adb_path = _resolve_adb_path()
+    prefix = [adb_path]
+    if device_id:
+        prefix += ["-s", device_id]
+    cmd = prefix + ["exec-out", "run-as", app_id, "cat", remote_path]
+    with open(local_path, "wb") as f:
+        _ = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, check=True)
+    logger.info(f"[adb] Pulled {remote_path} -> {local_path}")
+
+
 def device_benchmark(
     pte_path: str, ref_image: str, device_id: str | None = None, n_iters: int = 50
 ):
@@ -528,6 +562,12 @@ def device_benchmark(
     logger.info("[device] Granting read/write permissions to app sandbox...")
     adb(f"shell chmod -R 777 {DEVICE_BENCH_DIR}", device_id)
 
+    # Clear stale results from previous runs so the poll doesn't find old files
+    try:
+        adb("shell run-as com.rtst.app rm files/bench.json files/output.jpg", device_id)
+    except subprocess.CalledProcessError:
+        pass  # files don't exist yet, that's fine
+
     # Benchmark app via intent to measure actual app lifecycle preformance
     logger.info("[device] Launching Android BenchmarkActivity...")
     adb(
@@ -551,7 +591,7 @@ def device_benchmark(
     while elapsed < max_wait_seconds:
         try:
             # 'test -f' checks if the file exists. It returns 0 (success) if it does.
-            adb(f"shell test -f {DEVICE_BENCH_DIR}/bench.json", device_id)
+            adb("shell run-as com.rtst.app test -f files/bench.json", device_id)
             benchmark_complete = True
             break
         except subprocess.CalledProcessError:
@@ -570,8 +610,12 @@ def device_benchmark(
     results_dir = Path("results") / "device" / tag
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    adb(f"pull {DEVICE_BENCH_DIR}/result.json {results_dir}/bench.json", device_id)
-    adb(f"pull {DEVICE_BENCH_DIR}/output.jpg {results_dir}/output.jpg", device_id)
+    adb_pull_from_app(
+        "com.rtst.app", "files/bench.json", f"{results_dir}/bench.json", device_id
+    )
+    adb_pull_from_app(
+        "com.rtst.app", "files/output.jpg", f"{results_dir}/output.jpg", device_id
+    )
 
     # Cleanup device
     adb(f"shell rm -rf {DEVICE_BENCH_DIR}", device_id)
