@@ -15,12 +15,17 @@ class StyleTransferRunner(
     private val IMAGENET_STD  = floatArrayOf(0.229f, 0.224f, 0.225f)
     private val module: Module = Module.load(ptePath)
 
+    private val pixelBufferSize = modelWidth * modelHeight
+    private val intPixelBuffer = IntArray(pixelBufferSize)
+    private val floatInputBuffer = FloatArray(3 * pixelBufferSize)
+    private val intOutputBuffer = IntArray(pixelBufferSize)
+
     fun stylize(bitmap: Bitmap): Bitmap {
         // Resize to model's expected input size
         val resized = centerCrop(bitmap, modelWidth, modelHeight)
 
         // Preprocess — Bitmap to float tensor
-        val inputData = preprocessBitmap(resized, modelWidth, modelHeight)
+        val inputData = preprocessBitmap(resized)
 
         // Create ExecuTorch tensor with shape [1, 3, height, width]
         val inputTensor = Tensor.fromBlob(inputData, longArrayOf(1, 3, modelHeight.toLong(), modelWidth.toLong()))
@@ -32,7 +37,7 @@ class StyleTransferRunner(
         val outputData = outputs[0].toTensor().dataAsFloatArray
 
         // Postprocess — float tensor back to Bitmap (at model resolution)
-        return postprocessToBitmap(outputData, modelWidth, modelHeight)
+        return postprocessToBitmap(outputData)
     }
 
     private fun centerCrop(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
@@ -66,17 +71,11 @@ class StyleTransferRunner(
         return croppedBitmap
     }
 
-    private fun preprocessBitmap(bitmap: Bitmap, width: Int, height: Int): FloatArray {
-        val pixels =IntArray(width * height);
-        val pixelsFloat = FloatArray(3 * width * height)
+    private fun preprocessBitmap(bitmap: Bitmap): FloatArray {
+        bitmap.getPixels(intPixelBuffer, 0, modelWidth, 0, 0, modelWidth, modelHeight);
 
-        // Get ARGB pixels
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
-
-        val channelSize = width * height
-
-        for (i in pixels.indices) {
-            val argb = pixels[i]
+        for (i in intPixelBuffer.indices) {
+            val argb = intPixelBuffer[i]
 
             // Convert ARGB to RGB
             val r = (argb shr 16 and 0xFF) / 255.0f
@@ -84,30 +83,25 @@ class StyleTransferRunner(
             val b = (argb and 0xFF) / 255.0f
 
             // Store in float array as CHW
-            pixelsFloat[0 * channelSize + i] = (r - IMAGENET_MEAN[0]) / IMAGENET_STD[0]
-            pixelsFloat[1 * channelSize + i] = (g - IMAGENET_MEAN[1]) / IMAGENET_STD[1]
-            pixelsFloat[2 * channelSize + i] = (b - IMAGENET_MEAN[2]) / IMAGENET_STD[2]
+            floatInputBuffer[0 * pixelBufferSize + i] = (r - IMAGENET_MEAN[0]) / IMAGENET_STD[0]
+            floatInputBuffer[1 * pixelBufferSize + i] = (g - IMAGENET_MEAN[1]) / IMAGENET_STD[1]
+            floatInputBuffer[2 * pixelBufferSize + i] = (b - IMAGENET_MEAN[2]) / IMAGENET_STD[2]
         }
 
-        return pixelsFloat
+        return floatInputBuffer
     }
 
-    private fun postprocessToBitmap(data: FloatArray, width: Int, height: Int): Bitmap {
-        val channelSize = width * height
-
-        val outputPixels = IntArray(width * height)
-
-        for (i in outputPixels.indices) {
+    private fun postprocessToBitmap(data: FloatArray): Bitmap {
+        for (i in intOutputBuffer.indices) {
             // multiply with 255, clam and convert to int
-            val r = (data[0 * channelSize + i] * 255.0f).coerceIn(0.0f, 255.0f).toInt()
-            val g = (data[1 * channelSize + i] * 255.0f).coerceIn(0.0f, 255.0f).toInt()
-            val b = (data[2 * channelSize + i] * 255.0f).coerceIn(0.0f, 255.0f).toInt()
-
+            val r = (data[0 * pixelBufferSize + i] * 255.0f).coerceIn(0.0f, 255.0f).toInt()
+            val g = (data[1 * pixelBufferSize + i] * 255.0f).coerceIn(0.0f, 255.0f).toInt()
+            val b = (data[2 * pixelBufferSize + i] * 255.0f).coerceIn(0.0f, 255.0f).toInt()
 
             // pack into ARGB pixel
-            outputPixels[i] = (0xFF shl 24 or (r shl 16) or (g shl 8) or b)
+            intOutputBuffer[i] = (0xFF shl 24 or (r shl 16) or (g shl 8) or b)
         }
 
-        return Bitmap.createBitmap(outputPixels, width, height, Bitmap.Config.ARGB_8888)
+        return Bitmap.createBitmap(intOutputBuffer, modelWidth, modelHeight, Bitmap.Config.ARGB_8888)
     }
 }
