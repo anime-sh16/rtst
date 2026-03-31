@@ -7,7 +7,8 @@ import time
 from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
-
+import shutil
+import os
 import torch
 import torch.nn as nn
 
@@ -475,7 +476,21 @@ DEVICE_BENCH_DIR = "/data/local/tmp/rtst_bench"
 
 def adb(cmd: str, device_id: str | None = None) -> str:
     """Run an adb command, return stdout."""
-    prefix = ["adb"]
+    # 1. Try to find adb in the system PATH
+    adb_path = shutil.which("adb")
+
+    # 2. If Python can't find it in PATH, hardcode the macOS default path
+    if not adb_path:
+        mac_default = os.path.expanduser("~/Library/Android/sdk/platform-tools/adb")
+        if os.path.exists(mac_default):
+            adb_path = mac_default
+        else:
+            raise FileNotFoundError(
+                "Could not find 'adb'. Ensure Android Studio is installed and "
+                "the platform-tools directory exists."
+            )
+
+    prefix = [adb_path]
     if device_id:
         prefix += ["-s", device_id]
     full = prefix + cmd.split()
@@ -498,6 +513,7 @@ def device_benchmark(
     with open(sidecar_path) as f:
         sidecar = json.load(f)
     tag = sidecar["tag"]
+    backend = sidecar["config"]["backend"]
 
     logger.info(f"[device] Benchmarking {tag} on device {device_id or '(default)'}")
 
@@ -509,19 +525,46 @@ def device_benchmark(
     adb(f"push {pte_path} {DEVICE_BENCH_DIR}/model.pte", device_id)
     adb(f"push {ref_image} {DEVICE_BENCH_DIR}/input.jpg", device_id)
 
-    # executor_runner (CLI binary)
-    adb(f"push build_android/executor_runner {DEVICE_BENCH_DIR}/", device_id)
-    adb(f"shell chmod +x {DEVICE_BENCH_DIR}/executor_runner", device_id)
-    runner_output = adb(
-        f"shell cd {DEVICE_BENCH_DIR} && ./executor_runner "
-        f"--model_path model.pte "
-        f"--input_path input.bin "
-        f"--num_iters {n_iters}",
+    logger.info("[device] Granting read/write permissions to app sandbox...")
+    adb(f"shell chmod -R 777 {DEVICE_BENCH_DIR}", device_id)
+
+    # Benchmark app via intent to measure actual app lifecycle preformance
+    logger.info("[device] Launching Android BenchmarkActivity...")
+    adb(
+        f"shell am start -n com.rtst.app/.BenchmarkActivity "
+        f"--es model_path {DEVICE_BENCH_DIR}/model.pte "
+        f"--es tag {tag} "
+        f"--es backend {backend} "
+        f"--ei warmup 10 "
+        f"--ei iters {n_iters}",
         device_id,
     )
-    logger.info(f"[device] executor_runner output:\n{runner_output}")
 
-    # TODO: Benchmark app via intent to measure actual app lifecycle preformance
+    # 4. Wait for the app to finish processing
+    # We poll the device to see if 'bench.json' has been written yet.
+    logger.info("[device] Waiting for benchmark to complete...")
+    max_wait_seconds = (n_iters + 10) * 5
+    poll_interval = 5
+    elapsed = 0
+    benchmark_complete = False
+
+    while elapsed < max_wait_seconds:
+        try:
+            # 'test -f' checks if the file exists. It returns 0 (success) if it does.
+            adb(f"shell test -f {DEVICE_BENCH_DIR}/bench.json", device_id)
+            benchmark_complete = True
+            break
+        except subprocess.CalledProcessError:
+            # File doesn't exist yet, wait and try again
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+
+    if not benchmark_complete:
+        raise TimeoutError(
+            f"Benchmark timed out after {max_wait_seconds} seconds. App may have crashed."
+        )
+
+    logger.info("[device] Benchmark finished successfully.")
 
     # Pull results
     results_dir = Path("results") / "device" / tag
@@ -560,27 +603,53 @@ def aggregate_results():
         logger.warning("[aggregate] No benchmark JSONs found.")
         return
 
+    def fmt_num(val):
+        return f"{val:.1f}" if isinstance(val, (int, float)) else str(val)
+
     # Print comparison table
-    header = f"{'Tag':<50} {'Mean(ms)':<10} {'P95(ms)':<10} {'Mem(MB)':<10}"
-    separator = "-" * 80
+    header = f"{'Tag':<30} | {'Backend':<10} | {'Mean (ms)':<10} | {'P95 (ms)':<10} | {'Mem Delta (MB)':<15} | {'Device':<20}"
+    separator = "-" * 105
     lines = [header, separator]
     for r in rows:
-        tag = r.get("tag", "?")
-        mean = r.get("mean_latency_ms", "?")
-        p95 = r.get("p95_latency_ms", "?")
-        mem = r.get("peak_memory_mb", "?")
-        lines.append(f"{tag:<50} {mean:<10} {p95:<10} {mem:<10}")
+        tag = str(r.get("tag", "?"))
+        # tag_disp = tag if len(tag) <= 29 else tag[:26] + "..."
+        tag_disp = tag
+        backend = str(r.get("backend", "?"))
+        mean = fmt_num(r.get("mean_latency_ms", "?"))
+        p95 = fmt_num(r.get("p95_latency_ms", "?"))
+        mem = fmt_num(r.get("model_memory_delta_mb", "?"))
+        device = str(r.get("device_model", "?"))
 
-    logger.info(f"[aggregate] Comparison table:\n{chr(10).join(lines)}")
+        lines.append(
+            f"{tag_disp:<30} | {backend:<10} | {mean:<10} | {p95:<10} | {mem:<15} | {device:<20}"
+        )
+
+    logger.info(f"\n[aggregate] Comparison table:\n{chr(10).join(lines)}\n")
 
     # Also dump as CSV for spreadsheet/W&B import
     csv_path = Path("results") / "comparison.csv"
     import csv
 
+    all_keys = set()
+    for r in rows:
+        all_keys.update(r.keys())
+
+    # Sort keys for a consistent CSV column order, putting important ones first
+    priority_keys = [
+        "tag",
+        "backend",
+        "mean_latency_ms",
+        "p95_latency_ms",
+        "model_memory_delta_mb",
+        "device_model",
+    ]
+    sorted_keys = priority_keys + sorted(list(all_keys - set(priority_keys)))
+
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer = csv.DictWriter(f, fieldnames=sorted_keys)
         writer.writeheader()
         writer.writerows(rows)
+
     logger.info(f"[aggregate] CSV written: {csv_path}")
 
 
