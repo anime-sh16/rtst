@@ -20,6 +20,11 @@
             </intent-filter>
         </activity>
 
+        <!-- Benchmark activity — launchable via adb intent for automated benchmarking -->
+        <activity
+            android:name=".BenchmarkActivity"
+            android:exported="true" />
+
     </application>
 
 </manifest>

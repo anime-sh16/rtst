@@ -7,6 +7,8 @@ import org.pytorch.executorch.Tensor
 
 class StyleTransferRunner(ptePath: String) {
 
+    private val IMAGENET_MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
+    private val IMAGENET_STD  = floatArrayOf(0.229f, 0.224f, 0.225f)
     private val module: Module = Module.load(ptePath)
 
     fun stylize(bitmap: Bitmap): Bitmap {
@@ -48,9 +50,9 @@ class StyleTransferRunner(ptePath: String) {
             val b = (argb and 0xFF) / 255.0f
 
             // Store in float array as CHW
-            pixelsFloat[0 * channelSize + i] = r
-            pixelsFloat[1 * channelSize + i] = g
-            pixelsFloat[2 * channelSize + i] = b
+            pixelsFloat[0 * channelSize + i] = (r - IMAGENET_MEAN[0]) / IMAGENET_STD[0]
+            pixelsFloat[1 * channelSize + i] = (g - IMAGENET_MEAN[1]) / IMAGENET_STD[1]
+            pixelsFloat[2 * channelSize + i] = (b - IMAGENET_MEAN[2]) / IMAGENET_STD[2]
         }
 
         return pixelsFloat

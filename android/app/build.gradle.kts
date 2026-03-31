@@ -42,8 +42,12 @@ android {
 }
 
 dependencies {
-    // ExecuTorch runtime (pre-built AAR with delegates)
-    implementation("org.pytorch:executorch-android:0.6.0")
+    // ExecuTorch runtime (Maven Central — stable)
+    // To use nightly: download AAR from https://ossci-android.s3.amazonaws.com/executorch/release/snapshot-{YYYYMMDD}/executorch.aar
+    //   put in app/libs/, and use: implementation(files("libs/executorch.aar"))
+    //   plus: implementation("com.facebook.soloader:soloader:0.10.5")
+    //   plus: implementation("com.facebook.fbjni:fbjni:0.7.0")
+    implementation("org.pytorch:executorch-android:1.1.0")
 
     // AndroidX
     implementation("androidx.core:core-ktx:1.15.0")
@@ -51,4 +55,6 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.2.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }

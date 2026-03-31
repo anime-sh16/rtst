@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <!-- Original input image -->
+    <ImageView
+        android:id="@+id/imageViewInput"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:scaleType="fitCenter"
+        android:contentDescription="Input image" />
+
+    <!-- Stylized output image -->
+    <ImageView
+        android:id="@+id/imageViewOutput"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:scaleType="fitCenter"
+        android:contentDescription="Stylized output" />
+
+    <!-- Latency readout -->
+    <TextView
+        android:id="@+id/textViewLatency"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:text="Latency: —"
+        android:textSize="16sp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp" />
+
+    <!-- Trigger button -->
+    <Button
+        android:id="@+id/buttonStylize"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Stylize" />
+
+</LinearLayout>
