@@ -47,8 +47,10 @@ class BenchmarkActivity : AppCompatActivity() {
 
     companion object {
         val MODELS = listOf(
-            ModelConfig("IN / Vulkan", "style_transfer_in.pte", "vulkan"),
-            ModelConfig("BN / XNNPACK", "style_transfer_bn.pte", "xnnpack")
+            ModelConfig("IN / Vulkan", "johnson_in_mosaic_vulkan_fp32_640x480_export_mode.pte", "vulkan"),
+            ModelConfig("IN / XNNPACK", "johnson_in_mosaic_xnnpack_fp32_640x480_export_mode.pte", "xnnpack"),
+            ModelConfig("BN / Vulkan", "johnson_bn_mosaic_vulkan_fp32_640x480_export_mode.pte", "vulkan"),
+            ModelConfig("BN / XNNPACK", "johnson_bn_mosaic_xnnpack_fp32_640x480_export_mode.pte", "xnnpack"),
         )
         const val TEST_IMAGE_ASSET = "flower.jpg"
     }

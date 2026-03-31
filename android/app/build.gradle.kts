@@ -47,7 +47,8 @@ dependencies {
     //   put in app/libs/, and use: implementation(files("libs/executorch.aar"))
     //   plus: implementation("com.facebook.soloader:soloader:0.10.5")
     //   plus: implementation("com.facebook.fbjni:fbjni:0.7.0")
-    implementation("org.pytorch:executorch-android:1.1.0")
+    // implementation("org.pytorch:executorch-android:1.1.0")
+    implementation("org.pytorch:executorch-android-vulkan:1.1.0")
 
     // AndroidX
     implementation("androidx.core:core-ktx:1.15.0")

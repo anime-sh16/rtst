@@ -5,22 +5,25 @@ import org.pytorch.executorch.EValue
 import org.pytorch.executorch.Module
 import org.pytorch.executorch.Tensor
 
-class StyleTransferRunner(ptePath: String) {
+class StyleTransferRunner(
+    ptePath: String,
+    private val modelHeight: Int = 640,
+    private val modelWidth: Int = 480
+) {
 
     private val IMAGENET_MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
     private val IMAGENET_STD  = floatArrayOf(0.229f, 0.224f, 0.225f)
     private val module: Module = Module.load(ptePath)
 
     fun stylize(bitmap: Bitmap): Bitmap {
-        // Get dimensions
-        val width = bitmap.width
-        val height = bitmap.height
+        // Resize to model's expected input size
+        val resized = centerCrop(bitmap, modelWidth, modelHeight)
 
         // Preprocess — Bitmap to float tensor
-        val inputData = preprocessBitmap(bitmap, width, height)
+        val inputData = preprocessBitmap(resized, modelWidth, modelHeight)
 
         // Create ExecuTorch tensor with shape [1, 3, height, width]
-        val inputTensor = Tensor.fromBlob(inputData, longArrayOf(1, 3, height.toLong(), width.toLong()))
+        val inputTensor = Tensor.fromBlob(inputData, longArrayOf(1, 3, modelHeight.toLong(), modelWidth.toLong()))
 
         // Run inference
         val outputs = module.forward(EValue.from(inputTensor))
@@ -28,8 +31,39 @@ class StyleTransferRunner(ptePath: String) {
         // Get output float array
         val outputData = outputs[0].toTensor().dataAsFloatArray
 
-        // Postprocess — float tensor back to Bitmap
-        return postprocessToBitmap(outputData, width, height)
+        // Postprocess — float tensor back to Bitmap (at model resolution)
+        return postprocessToBitmap(outputData, modelWidth, modelHeight)
+    }
+
+    private fun centerCrop(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
+        val sourceWidth = source.width
+        val sourceHeight = source.height
+
+        // Calculate the scale required to completely fill the target dimensions
+        val scaleFactor = maxOf(
+            targetWidth.toFloat() / sourceWidth,
+            targetHeight.toFloat() / sourceHeight
+        )
+
+        val scaledWidth = (sourceWidth * scaleFactor).toInt()
+        val scaledHeight = (sourceHeight * scaleFactor).toInt()
+
+        // 1. Scale the image (maintains aspect ratio, covers the target bounding box)
+        val scaledBitmap = Bitmap.createScaledBitmap(source, scaledWidth, scaledHeight, true)
+
+        // 2. Calculate offsets to crop exactly from the center
+        val xOffset = maxOf(0, (scaledWidth - targetWidth) / 2)
+        val yOffset = maxOf(0, (scaledHeight - targetHeight) / 2)
+
+        // 3. Crop the final target size from the center of the scaled image
+        val croppedBitmap = Bitmap.createBitmap(scaledBitmap, xOffset, yOffset, targetWidth, targetHeight)
+
+        // 4. Clean up intermediate bitmap to free memory immediately (crucial for ML pipelines)
+        if (scaledBitmap != source && scaledBitmap != croppedBitmap) {
+            scaledBitmap.recycle()
+        }
+
+        return croppedBitmap
     }
 
     private fun preprocessBitmap(bitmap: Bitmap, width: Int, height: Int): FloatArray {

@@ -74,7 +74,7 @@ class BenchmarkRunner(
             p95LatencyMs = latencies.sorted()[(latencies.size * 0.95).toInt()],
             nativeHeapBeforeMb = allocatedHeapBefore,
             nativeHeapAfterMb = allocatedHeapAfter,
-            modelMemoryDeltaMb = allocatedHeapAfter - allocatedHeapBefore
+            // modelMemoryDeltaMb = allocatedHeapAfter - allocatedHeapBefore
         )
     }
 }

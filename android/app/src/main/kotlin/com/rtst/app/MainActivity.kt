@@ -22,7 +22,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var runner: StyleTransferRunner
 
-    private val MODEL_ASSET_NAME = "style_transfer_in.pte"
+    private val MODEL_ASSET_NAME = "johnson_bn_mosaic_xnnpack_fp32_640x480_export_mode.pte"
 
     private val TEST_IMAGE_ASSET_NAME = "flower.jpg"
 
