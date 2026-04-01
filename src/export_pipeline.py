@@ -214,6 +214,44 @@ def analyze_delegation(edge_program) -> dict:
     return result
 
 
+CALIB_IMAGES_DIR = Path("data/test_inference")
+
+
+def _load_calib_inputs(
+    calib_dir: Path, input_h: int, input_w: int
+) -> list[torch.Tensor]:
+    """Load images from calib_dir, preprocess them, and return a list of tensors.
+
+    Each tensor should be shape (1, 3, input_h, input_w), normalized to [0, 1].
+    """
+    from PIL import Image
+    from torchvision.transforms import v2
+
+    transform = v2.Compose(
+        [
+            v2.Resize((input_h, input_w)),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+        ]
+    )
+
+    image_paths = sorted(
+        p for p in calib_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+    )
+
+    if not image_paths:
+        raise FileNotFoundError(f"No calibration images found in {calib_dir}")
+
+    tensors = []
+    for path in image_paths:
+        img = Image.open(path).convert("RGB")
+        tensor = transform(img).unsqueeze(0)
+        tensors.append(tensor)
+
+    logger.info("Loaded %d calibration images from %s", len(tensors), calib_dir)
+    return tensors
+
+
 def _quantize_vulkan_int8(exported_program, calib_inputs=None):
     """TODO: Update the default calib inputs and caliberation method"""
 
@@ -230,7 +268,8 @@ def _quantize_vulkan_int8(exported_program, calib_inputs=None):
 
     quantized_module = prepare_pt2e(exported_program.module(), quantizer)
 
-    quantized_module(*calib_inputs)
+    for inp in calib_inputs:
+        quantized_module(inp)
     quantized_module = convert_pt2e(quantized_module)
 
     return quantized_module
@@ -251,7 +290,8 @@ def _quantize_xnnpack_int8(exported_program, calib_inputs=None):
 
     prepared_model = prepare_pt2e(exported_program.module(), quantizer)
 
-    prepared_model(*calib_inputs)
+    for inp in calib_inputs:
+        prepared_model(inp)
     quantized_module = convert_pt2e(prepared_model)
 
     return quantized_module
@@ -296,10 +336,12 @@ def export_model(cfg: ExportConfig):
     exported = torch.export.export(model, example_input)
 
     if cfg.quantize and cfg.backend == Backend.VULKAN:
-        quantized_module = _quantize_vulkan_int8(exported)
+        calib_inputs = _load_calib_inputs(CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w)
+        quantized_module = _quantize_vulkan_int8(exported, calib_inputs)
         exported = torch.export.export(quantized_module, example_input)
     elif cfg.quantize and cfg.backend == Backend.XNNPACK:
-        quantized_module = _quantize_xnnpack_int8(exported)
+        calib_inputs = _load_calib_inputs(CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w)
+        quantized_module = _quantize_xnnpack_int8(exported, calib_inputs)
         exported = torch.export.export(quantized_module, example_input)
 
     partitioner = {

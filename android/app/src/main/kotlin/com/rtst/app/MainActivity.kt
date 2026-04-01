@@ -95,7 +95,7 @@ class MainActivity : AppCompatActivity() {
         val photoFile = File.createTempFile("capture_", ".jpg", photosDir)
         currentPhotoFile = photoFile
         currentPhotoUri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", photoFile)
-        cameraLauncher.launch(currentPhotoUri)
+        cameraLauncher.launch(currentPhotoUri!!)
     }
 
     private fun onPhotoTaken() {
