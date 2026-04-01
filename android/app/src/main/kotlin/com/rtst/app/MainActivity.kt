@@ -1,84 +1,138 @@
 package com.rtst.app
 
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
-import android.widget.Button
-import android.widget.ImageView
-import android.widget.TextView
+import android.util.Log
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Spinner
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import java.io.File
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.floatingactionbutton.FloatingActionButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var inputImageView: ImageView
-    private lateinit var outputImageView: ImageView
-    private lateinit var stylizeButton: Button
-    private lateinit var latencyText: TextView
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var emptyText: View
+    private lateinit var fab: FloatingActionButton
+    private lateinit var spinnerModel: Spinner
+    private var runner: StyleTransferRunner? = null
 
-    private lateinit var runner: StyleTransferRunner
+    private val galleryItems = mutableListOf<GalleryItem>()
+    private lateinit var adapter: GalleryAdapter
 
-    private val MODEL_ASSET_NAME = "johnson_bn_mosaic_xnnpack_fp32_640x480_export_mode.pte"
+    private var currentPhotoFile: File? = null
+    private var currentPhotoUri: Uri? = null
 
-    private val TEST_IMAGE_ASSET_NAME = "flower.jpg"
+    // Reuse the same model list from BenchmarkActivity
+    private val models = BenchmarkActivity.MODELS
+
+    private val cameraLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (success) {
+            onPhotoTaken()
+        } else {
+            Log.e("MainActivity", "Camera capture cancelled or failed")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        inputImageView  = findViewById(R.id.imageViewInput)
-        outputImageView = findViewById(R.id.imageViewOutput)
-        stylizeButton   = findViewById(R.id.buttonStylize)
-        latencyText     = findViewById(R.id.textViewLatency)
+        recyclerView = findViewById(R.id.recyclerGallery)
+        emptyText = findViewById(R.id.textEmpty)
+        fab = findViewById(R.id.fabCamera)
+        spinnerModel = findViewById(R.id.spinnerModel)
 
-        val modelFile = assetToFile(MODEL_ASSET_NAME)
-        runner = StyleTransferRunner(modelFile.absolutePath)
-
-        val inputBitmap = loadBitmapFromAssets(TEST_IMAGE_ASSET_NAME)
-        inputImageView.setImageBitmap(inputBitmap)
-
-        stylizeButton.setOnClickListener {
-            onStylizeClicked(inputBitmap)
+        // Model spinner
+        val spinnerAdapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            models.map { it.label }
+        )
+        spinnerModel.adapter = spinnerAdapter
+        spinnerModel.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                loadModel(models[position])
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
+
+        // Gallery
+        adapter = GalleryAdapter(galleryItems)
+        recyclerView.layoutManager = LinearLayoutManager(this)
+        recyclerView.adapter = adapter
+
+        fab.setOnClickListener { launchCamera() }
+
+        updateEmptyState()
     }
 
-    private fun onStylizeClicked(input: Bitmap) {
+    private fun loadModel(config: BenchmarkActivity.ModelConfig) {
+        fab.isEnabled = false
         lifecycleScope.launch {
-            stylizeButton.isEnabled = false
-            val startMs = System.currentTimeMillis()
-            val output: Bitmap = withContext(Dispatchers.Default) { runner.stylize(input) }
-            outputImageView.setImageBitmap(output)
-            val elapsedMs = System.currentTimeMillis() - startMs
-            latencyText.text = "Latency: ${elapsedMs} ms"
-            stylizeButton.isEnabled = true
+            runner = withContext(Dispatchers.Default) {
+                val modelFile = assetToFile(config.assetName)
+                StyleTransferRunner(modelFile.absolutePath)
+            }
+            fab.isEnabled = true
         }
     }
 
-    /**
-     * Copies a file from assets/ into the app's internal filesDir.
-     * ExecuTorch Module.load() needs a real filesystem path, not an asset stream.
-     */
+    private fun launchCamera() {
+        if (runner == null) return
+        val photosDir = File(cacheDir, "photos").apply { mkdirs() }
+        val photoFile = File.createTempFile("capture_", ".jpg", photosDir)
+        currentPhotoFile = photoFile
+        currentPhotoUri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", photoFile)
+        cameraLauncher.launch(currentPhotoUri)
+    }
+
+    private fun onPhotoTaken() {
+        val photoFile = currentPhotoFile ?: return
+        val original = BitmapFactory.decodeFile(photoFile.absolutePath) ?: return
+        val currentRunner = runner ?: return
+
+        fab.isEnabled = false
+
+        lifecycleScope.launch {
+            val (stylized, elapsedMs) = withContext(Dispatchers.Default) {
+                val start = System.nanoTime()
+                val result = currentRunner.stylize(original)
+                val elapsed = (System.nanoTime() - start) / 1_000_000
+                Pair(result, elapsed)
+            }
+
+            val modelLabel = models[spinnerModel.selectedItemPosition].label
+            galleryItems.add(0, GalleryItem(original, stylized, "$modelLabel — ${elapsedMs} ms"))
+            adapter.notifyItemInserted(0)
+            recyclerView.scrollToPosition(0)
+            updateEmptyState()
+            fab.isEnabled = true
+        }
+    }
+
+    private fun updateEmptyState() {
+        emptyText.visibility = if (galleryItems.isEmpty()) View.VISIBLE else View.GONE
+    }
+
     private fun assetToFile(assetName: String): File {
         val outFile = File(filesDir, assetName)
         if (!outFile.exists()) {
             assets.open(assetName).use { input ->
-                outFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
+                outFile.outputStream().use { output -> input.copyTo(output) }
             }
         }
         return outFile
-    }
-
-
-    /**
-     * Loads a Bitmap from assets/.
-     */
-    private fun loadBitmapFromAssets(assetName: String): Bitmap {
-        return BitmapFactory.decodeStream(assets.open(assetName))
     }
 }

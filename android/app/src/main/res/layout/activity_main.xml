@@ -1,45 +1,66 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
+<androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="16dp">
+    android:layout_height="match_parent">
 
-    <!-- Original input image -->
-    <ImageView
-        android:id="@+id/imageViewInput"
+    <!-- Top bar with model selector -->
+    <LinearLayout
+        android:id="@+id/topBar"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:scaleType="fitCenter"
-        android:contentDescription="Input image" />
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:gravity="center_vertical"
+        android:background="?android:attr/colorBackground"
+        android:elevation="4dp">
 
-    <!-- Stylized output image -->
-    <ImageView
-        android:id="@+id/imageViewOutput"
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Model:"
+            android:textSize="14sp"
+            android:paddingEnd="8dp" />
+
+        <Spinner
+            android:id="@+id/spinnerModel"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1" />
+
+    </LinearLayout>
+
+    <!-- Scrollable gallery of original/stylized pairs -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerGallery"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:scaleType="fitCenter"
-        android:contentDescription="Stylized output" />
+        android:layout_height="match_parent"
+        android:paddingTop="64dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="8dp"
+        android:clipToPadding="false" />
 
-    <!-- Latency readout -->
+    <!-- Empty state text (shown when gallery is empty) -->
     <TextView
-        android:id="@+id/textViewLatency"
+        android:id="@+id/textEmpty"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:text="Latency: —"
+        android:layout_gravity="center"
+        android:text="Take a photo to stylize"
         android:textSize="16sp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp" />
+        android:textColor="?android:attr/textColorSecondary" />
 
-    <!-- Trigger button -->
-    <Button
-        android:id="@+id/buttonStylize"
-        android:layout_width="match_parent"
+    <!-- Camera FAB -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fabCamera"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Stylize" />
+        android:layout_gravity="bottom|end"
+        android:layout_margin="24dp"
+        android:src="@android:drawable/ic_menu_camera"
+        android:contentDescription="Take photo"
+        app:fabSize="normal" />
 
-</LinearLayout>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

@@ -22,22 +22,6 @@ class BenchmarkRunner(
     /**
      * Run the full benchmark: warmup + measured iterations.
      * Returns a BenchmarkResult with all stats.
-     *
-     * TODO: implement this method
-     *   1. Record native heap BEFORE: Debug.getNativeHeapAllocatedSize() / (1024.0 * 1024.0)
-     *   2. Warmup loop: call runner.stylize(inputBitmap) for warmupIters times (discard results)
-     *   3. Measurement loop: for each of measureIters iterations:
-     *      a. Record System.nanoTime() before
-     *      b. Call runner.stylize(inputBitmap)
-     *      c. Record System.nanoTime() after
-     *      d. Compute elapsed ms: (after - before) / 1_000_000.0
-     *      e. Append to a latencies list
-     *   4. Record native heap AFTER
-     *   5. Build and return BenchmarkResult with all the collected data
-     *      - deviceModel = Build.MODEL
-     *      - androidVersion = Build.VERSION.RELEASE
-     *      - timestamp = Instant.now().toString()
-     *      - inputWidth/Height from inputBitmap.width / .height
      */
     fun run(warmupIters: Int = 5, measureIters: Int = 20): BenchmarkResult {
 
