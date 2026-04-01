@@ -214,6 +214,49 @@ def analyze_delegation(edge_program) -> dict:
     return result
 
 
+def _quantize_vulkan_int8(exported_program, calib_inputs=None):
+    """TODO: Update the default calib inputs and caliberation method"""
+
+    from executorch.backends.vulkan.quantizer.vulkan_quantizer import (
+        get_symmetric_quantization_config,
+        VulkanQuantizer,
+    )
+    from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_pt2e
+
+    quantizer = VulkanQuantizer()
+    quantizer.set_global(
+        get_symmetric_quantization_config(is_dynamic=False, weight_bits=8)
+    )
+
+    quantized_module = prepare_pt2e(exported_program.module(), quantizer)
+
+    quantized_module(*calib_inputs)
+    quantized_module = convert_pt2e(quantized_module)
+
+    return quantized_module
+
+
+def _quantize_xnnpack_int8(exported_program, calib_inputs=None):
+    """TODO: Update the default calib inputs and caliberation method"""
+
+    from executorch.backends.xnnpack.quantizer.xnnpack_quantizer import (
+        XNNPACKQuantizer,
+        get_symmetric_quantization_config,
+    )
+    from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_pt2e
+
+    qparams = get_symmetric_quantization_config(is_per_channel=True)
+    quantizer = XNNPACKQuantizer()
+    quantizer.set_global(qparams)
+
+    prepared_model = prepare_pt2e(exported_program.module(), quantizer)
+
+    prepared_model(*calib_inputs)
+    quantized_module = convert_pt2e(prepared_model)
+
+    return quantized_module
+
+
 def export_model(cfg: ExportConfig):
     """
     TODO: Add the keep aspect flag usage for the dimension range to `export()`
@@ -252,6 +295,13 @@ def export_model(cfg: ExportConfig):
     example_input = (torch.randn(1, 3, cfg.input_h, cfg.input_w),)
     exported = torch.export.export(model, example_input)
 
+    if cfg.quantize and cfg.backend == Backend.VULKAN:
+        quantized_module = _quantize_vulkan_int8(exported)
+        exported = torch.export.export(quantized_module, example_input)
+    elif cfg.quantize and cfg.backend == Backend.XNNPACK:
+        quantized_module = _quantize_xnnpack_int8(exported)
+        exported = torch.export.export(quantized_module, example_input)
+
     partitioner = {
         Backend.XNNPACK: [XnnpackPartitioner()],
         Backend.VULKAN: [VulkanPartitioner(), XnnpackPartitioner()],
@@ -264,11 +314,6 @@ def export_model(cfg: ExportConfig):
         )
     else:
         edge = to_edge_transform_and_lower(exported, generate_etrecord=True)
-
-    if cfg.quantize:
-        # TODO: implement quantization using torchao
-        logger.error("[export] Quantization not supported yet. Please use fp32.")
-        raise NotImplementedError
 
     delegate_analysis = analyze_delegation(edge)
 
