@@ -62,6 +62,7 @@ class NormType(str, Enum):
 class Backend(str, Enum):
     XNNPACK = "xnnpack"
     VULKAN = "vulkan"
+    QNN = "qnn"
     CPU = "cpu"  # no delegation, pure portable ops
 
 
@@ -83,6 +84,9 @@ class ExportConfig:
 
     # Validation
     cosine_similarity_threshold: float = 0.99
+
+    # qnn only
+    soc_model: str = "SM8475"
 
     # Paths (auto-populated)
     export_dir: str = "exports"
@@ -217,6 +221,40 @@ def analyze_delegation(edge_program) -> dict:
 CALIB_IMAGES_DIR = Path("data/coco/test1000")
 
 
+def _quantize_and_lower_qnn(model, example_input, cfg):
+    from executorch.backends.qualcomm.quantizer.quantizer import QnnQuantizer
+    from executorch.backends.qualcomm.utils.utils import (
+        generate_qnn_executorch_compiler_spec,
+        generate_htp_compiler_spec,
+        QcomChipset,
+        to_edge_transform_and_lower_to_qnn,
+    )
+    from torchao.quantization.pt2e.quantize_pt2e import prepare_pt2e, convert_pt2e
+
+    quantizer = QnnQuantizer()  # defaults to 8a8w
+    exported = torch.export.export(model, example_input, strict=True)
+    prepared = prepare_pt2e(exported.module(), quantizer)
+
+    calib_inputs = _load_calib_inputs(CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w)
+
+    for calib_input in calib_inputs:
+        prepared(calib_input)
+
+    quantized = convert_pt2e(prepared)
+
+    soc = getattr(QcomChipset, cfg.soc_model)
+    backend_options = generate_htp_compiler_spec(use_fp16=False)
+    compile_spec = generate_qnn_executorch_compiler_spec(
+        soc_model=soc,
+        backend_options=backend_options,
+    )
+
+    delegated = to_edge_transform_and_lower_to_qnn(
+        quantized, example_input, compile_spec
+    )
+    return delegated
+
+
 def _load_calib_inputs(
     calib_dir: Path, input_h: int, input_w: int, max_images: int = 500
 ) -> list[torch.Tensor]:
@@ -335,27 +373,34 @@ def export_model(cfg: ExportConfig):
     example_input = (torch.randn(1, 3, cfg.input_h, cfg.input_w),)
     exported = torch.export.export(model, example_input)
 
-    if cfg.quantize and cfg.backend == Backend.VULKAN:
-        calib_inputs = _load_calib_inputs(CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w)
-        quantized_module = _quantize_vulkan_int8(exported, calib_inputs)
-        exported = torch.export.export(quantized_module, example_input)
-    elif cfg.quantize and cfg.backend == Backend.XNNPACK:
-        calib_inputs = _load_calib_inputs(CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w)
-        quantized_module = _quantize_xnnpack_int8(exported, calib_inputs)
-        exported = torch.export.export(quantized_module, example_input)
-
-    partitioner = {
-        Backend.XNNPACK: [XnnpackPartitioner()],
-        Backend.VULKAN: [VulkanPartitioner(), XnnpackPartitioner()],
-        Backend.CPU: None,
-    }[cfg.backend]
-
-    if partitioner:
-        edge = to_edge_transform_and_lower(
-            exported, partitioner=partitioner, generate_etrecord=True
-        )
+    if cfg.backend == Backend.QNN:
+        edge = _quantize_and_lower_qnn(model, example_input, cfg)
     else:
-        edge = to_edge_transform_and_lower(exported, generate_etrecord=True)
+        if cfg.quantize and cfg.backend == Backend.VULKAN:
+            calib_inputs = _load_calib_inputs(
+                CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w
+            )
+            quantized_module = _quantize_vulkan_int8(exported, calib_inputs)
+            exported = torch.export.export(quantized_module, example_input)
+        elif cfg.quantize and cfg.backend == Backend.XNNPACK:
+            calib_inputs = _load_calib_inputs(
+                CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w
+            )
+            quantized_module = _quantize_xnnpack_int8(exported, calib_inputs)
+            exported = torch.export.export(quantized_module, example_input)
+
+        partitioner = {
+            Backend.XNNPACK: [XnnpackPartitioner()],
+            Backend.VULKAN: [VulkanPartitioner(), XnnpackPartitioner()],
+            Backend.CPU: None,
+        }[cfg.backend]
+
+        if partitioner:
+            edge = to_edge_transform_and_lower(
+                exported, partitioner=partitioner, generate_etrecord=True
+            )
+        else:
+            edge = to_edge_transform_and_lower(exported, generate_etrecord=True)
 
     delegate_analysis = analyze_delegation(edge)
 
