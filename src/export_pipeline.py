@@ -214,11 +214,11 @@ def analyze_delegation(edge_program) -> dict:
     return result
 
 
-CALIB_IMAGES_DIR = Path("data/test_inference")
+CALIB_IMAGES_DIR = Path("data/coco/test1000")
 
 
 def _load_calib_inputs(
-    calib_dir: Path, input_h: int, input_w: int
+    calib_dir: Path, input_h: int, input_w: int, max_images: int = 500
 ) -> list[torch.Tensor]:
     """Load images from calib_dir, preprocess them, and return a list of tensors.
 
@@ -243,7 +243,7 @@ def _load_calib_inputs(
         raise FileNotFoundError(f"No calibration images found in {calib_dir}")
 
     tensors = []
-    for path in image_paths:
+    for path in image_paths[:max_images]:
         img = Image.open(path).convert("RGB")
         tensor = transform(img).unsqueeze(0)
         tensors.append(tensor)
@@ -284,7 +284,7 @@ def _quantize_xnnpack_int8(exported_program, calib_inputs=None):
     )
     from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_pt2e
 
-    qparams = get_symmetric_quantization_config(is_per_channel=True)
+    qparams = get_symmetric_quantization_config(is_per_channel=True, is_dynamic=False)
     quantizer = XNNPACKQuantizer()
     quantizer.set_global(qparams)
 
