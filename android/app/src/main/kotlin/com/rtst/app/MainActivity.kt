@@ -82,6 +82,10 @@ class MainActivity : AppCompatActivity() {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
 
+        // Default to the higher-res model
+        val defaultIndex = models.indexOfFirst { it.inputHeight == 640 && it.backend == "xnnpack" }.coerceAtLeast(0)
+        spinnerModel.setSelection(defaultIndex)
+
         // Gallery
         adapter = GalleryAdapter(galleryItems)
         recyclerView.layoutManager = LinearLayoutManager(this)

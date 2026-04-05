@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
 
     <!-- CameraX preview (background — shows raw camera feed) -->
     <androidx.camera.view.PreviewView
@@ -10,48 +12,85 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Stylized output overlay (drawn on top of preview) -->
+    <!-- Stylized output overlay -->
     <ImageView
         android:id="@+id/stylizedOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:scaleType="fitCenter" />
 
-    <!-- Top bar: model selector + toggle between raw/stylized view -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:padding="8dp"
-        android:gravity="center_vertical"
-        android:background="#80000000">
+    <!-- Loading spinner — centered, shown during model load -->
+    <ProgressBar
+        android:id="@+id/progressLoading"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center"
+        android:visibility="gone"
+        android:indeterminateTint="@android:color/white" />
 
-        <Spinner
-            android:id="@+id/spinnerModel"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_weight="1" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnToggleView"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Raw"
-            android:textColor="@android:color/white" />
-
-    </LinearLayout>
-
-    <!-- FPS / latency indicator -->
+    <!-- Latency badge — top-left, below status bar -->
     <TextView
         android:id="@+id/textLatency"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|start"
-        android:padding="12dp"
+        android:layout_gravity="top|start"
+        android:layout_marginTop="48dp"
+        android:layout_marginStart="16dp"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="6dp"
         android:textColor="@android:color/white"
-        android:textSize="14sp"
-        android:background="#80000000"
+        android:textSize="13sp"
+        android:background="@drawable/badge_bg"
         android:text="-- ms" />
+
+    <!-- Bottom control panel — camera-app style -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:background="@drawable/bottom_panel_bg"
+        android:paddingTop="16dp"
+        android:paddingBottom="32dp"
+        android:paddingHorizontal="16dp">
+
+        <!-- Model selector row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Model"
+                android:textColor="@android:color/white"
+                android:textSize="13sp"
+                android:paddingEnd="8dp" />
+
+            <Spinner
+                android:id="@+id/spinnerModel"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_weight="1"
+                android:background="@drawable/spinner_bg"
+                android:popupBackground="#DD222222" />
+
+        </LinearLayout>
+
+        <!-- Toggle button — full width -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnToggleView"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="Show Raw"
+            android:textColor="@android:color/white"
+            app:strokeColor="#80FFFFFF"
+            app:cornerRadius="24dp" />
+
+    </LinearLayout>
 
 </FrameLayout>
