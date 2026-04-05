@@ -39,19 +39,7 @@ class BenchmarkActivity : AppCompatActivity() {
     private lateinit var editWarmup: EditText
     private lateinit var editMeasureIters: EditText
 
-    /**
-     * Each entry: display label → asset filename → backend tag
-     * Add more models here as you export them.
-     */
-    data class ModelConfig(val label: String, val assetName: String, val backend: String)
-
     companion object {
-        val MODELS = listOf(
-            ModelConfig("IN / Vulkan", "johnson_in_mosaic_vulkan_fp32_640x480_export_mode.pte", "vulkan"),
-            ModelConfig("IN / XNNPACK", "johnson_in_mosaic_xnnpack_fp32_640x480_export_mode.pte", "xnnpack"),
-            ModelConfig("BN / Vulkan", "johnson_bn_mosaic_vulkan_fp32_640x480_export_mode.pte", "vulkan"),
-            ModelConfig("BN / XNNPACK", "johnson_bn_mosaic_xnnpack_fp32_640x480_export_mode.pte", "xnnpack"),
-        )
         const val TEST_IMAGE_ASSET = "flower.jpg"
     }
 
@@ -71,7 +59,7 @@ class BenchmarkActivity : AppCompatActivity() {
         val adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_dropdown_item,
-            MODELS.map { it.label }
+            ALL_MODELS.map { it.label }
         )
         spinnerModel.adapter = adapter
 
@@ -134,13 +122,15 @@ class BenchmarkActivity : AppCompatActivity() {
             resultsText.text = "Running benchmark..."
 
             // Read UI config
-            val selectedModel = MODELS[spinnerModel.selectedItemPosition]
+            val selectedModel = ALL_MODELS[spinnerModel.selectedItemPosition]
             val warmup = editWarmup.text.toString().toIntOrNull() ?: 5
             val iters = editMeasureIters.text.toString().toIntOrNull() ?: 20
 
             val (benchResult, outputBitmap) = withContext(Dispatchers.Default) {
                 val modelFile = assetToFile(selectedModel.assetName)
-                val runner = StyleTransferRunner(modelFile.absolutePath)
+                val runner = StyleTransferRunner(
+                    modelFile.absolutePath, selectedModel.inputHeight, selectedModel.inputWidth
+                )
                 val inputBitmap = BitmapFactory.decodeStream(assets.open(TEST_IMAGE_ASSET))
 
                 val result = BenchmarkRunner(

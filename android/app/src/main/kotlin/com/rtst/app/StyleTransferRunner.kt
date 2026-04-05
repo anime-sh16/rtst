@@ -7,8 +7,8 @@ import org.pytorch.executorch.Tensor
 
 class StyleTransferRunner(
     ptePath: String,
-    private val modelHeight: Int = 640,
-    private val modelWidth: Int = 480
+    private val modelHeight: Int,
+    private val modelWidth: Int,
 ) {
 
     private val IMAGENET_MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)

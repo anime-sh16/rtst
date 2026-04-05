@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.rtst.app"
-        minSdk = 26
+        minSdk = 28
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
@@ -49,6 +49,13 @@ dependencies {
     //   plus: implementation("com.facebook.fbjni:fbjni:0.7.0")
     // implementation("org.pytorch:executorch-android:1.1.0")
     implementation("org.pytorch:executorch-android-vulkan:1.1.0")
+
+    // CameraX (for real-time video style transfer)
+    val cameraXVersion = "1.4.1"
+    implementation("androidx.camera:camera-core:$cameraXVersion")
+    implementation("androidx.camera:camera-camera2:$cameraXVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
+    implementation("androidx.camera:camera-view:$cameraXVersion")
 
     // AndroidX
     implementation("androidx.core:core-ktx:1.15.0")

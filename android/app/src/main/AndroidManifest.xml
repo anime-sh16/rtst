@@ -20,6 +20,9 @@
             </intent-filter>
         </activity>
 
+        <!-- Real-time camera style transfer -->
+        <activity android:name=".CameraActivity" />
+
         <!-- Benchmark activity — launchable via adb intent for automated benchmarking -->
         <activity
             android:name=".BenchmarkActivity"

@@ -1,5 +1,7 @@
 package com.rtst.app
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
@@ -8,6 +10,7 @@ import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Spinner
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
@@ -18,6 +21,7 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.content.Intent
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -25,6 +29,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var recyclerView: RecyclerView
     private lateinit var emptyText: View
     private lateinit var fab: FloatingActionButton
+    private lateinit var fabVideo: FloatingActionButton
     private lateinit var spinnerModel: Spinner
     private var runner: StyleTransferRunner? = null
 
@@ -34,8 +39,17 @@ class MainActivity : AppCompatActivity() {
     private var currentPhotoFile: File? = null
     private var currentPhotoUri: Uri? = null
 
-    // Reuse the same model list from BenchmarkActivity
-    private val models = BenchmarkActivity.MODELS
+    private val models = ALL_MODELS
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchCameraIntent()
+        } else {
+            Toast.makeText(this, "Camera permission is required", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     private val cameraLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success) {
@@ -73,17 +87,22 @@ class MainActivity : AppCompatActivity() {
         recyclerView.layoutManager = LinearLayoutManager(this)
         recyclerView.adapter = adapter
 
+        fabVideo = findViewById(R.id.fabVideo)
+
         fab.setOnClickListener { launchCamera() }
+        fabVideo.setOnClickListener {
+            startActivity(Intent(this, CameraActivity::class.java))
+        }
 
         updateEmptyState()
     }
 
-    private fun loadModel(config: BenchmarkActivity.ModelConfig) {
+    private fun loadModel(config: ModelConfig) {
         fab.isEnabled = false
         lifecycleScope.launch {
             runner = withContext(Dispatchers.Default) {
                 val modelFile = assetToFile(config.assetName)
-                StyleTransferRunner(modelFile.absolutePath)
+                StyleTransferRunner(modelFile.absolutePath, config.inputHeight, config.inputWidth)
             }
             fab.isEnabled = true
         }
@@ -91,6 +110,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun launchCamera() {
         if (runner == null) return
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            launchCameraIntent()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun launchCameraIntent() {
         val photosDir = File(cacheDir, "photos").apply { mkdirs() }
         val photoFile = File.createTempFile("capture_", ".jpg", photosDir)
         currentPhotoFile = photoFile
