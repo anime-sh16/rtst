@@ -91,6 +91,18 @@
             app:strokeColor="#80FFFFFF"
             app:cornerRadius="24dp" />
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSmoothMode"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:text="Smooth: OFF"
+            android:textColor="@android:color/white"
+            app:strokeColor="#80FFFFFF"
+            app:cornerRadius="24dp" />
+
+
     </LinearLayout>
 
 </FrameLayout>

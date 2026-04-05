@@ -3,7 +3,9 @@ package com.rtst.app
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.os.Bundle
 import android.util.Log
 import android.view.View
@@ -56,6 +58,13 @@ class CameraActivity : AppCompatActivity() {
     @Volatile
     private var isProcessing: Boolean = false
 
+    private var smoothMode: Boolean = false
+    private var frameCounter: Long = 0
+    private var lastStylizedBitmap: Bitmap? = null
+    private val blendAlpha: Float = 0.9f  // weight of previous stylized frame in blend
+
+    private lateinit var btnSmoothMode: MaterialButton
+
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -78,6 +87,8 @@ class CameraActivity : AppCompatActivity() {
         textLatency = findViewById(R.id.textLatency)
         progressLoading = findViewById(R.id.progressLoading)
 
+        btnSmoothMode = findViewById(R.id.btnSmoothMode)
+
         // Start in raw mode — show camera preview, hide stylized overlay
         showStylized = false
         stylizedOverlay.visibility = View.GONE
@@ -96,6 +107,7 @@ class CameraActivity : AppCompatActivity() {
         startCamera()
         setupModelSpinner()
         setupToggleButton()
+        setupSmoothButton()
     }
 
     private fun setupModelSpinner() {
@@ -131,6 +143,15 @@ class CameraActivity : AppCompatActivity() {
                 previewView.visibility = View.VISIBLE
                 btnToggleView.text = "Show Stylized"
             }
+        }
+    }
+
+    private fun setupSmoothButton() {
+        btnSmoothMode.setOnClickListener {
+            smoothMode = !smoothMode
+            btnSmoothMode.text = if (smoothMode) "Smooth: ON" else "Smooth: OFF"
+            frameCounter = 0
+            lastStylizedBitmap = null
         }
     }
 
@@ -204,6 +225,7 @@ class CameraActivity : AppCompatActivity() {
             return
         }
         isProcessing = true
+        frameCounter++
 
         try {
             val rawBitmap = imageProxy.toBitmap()
@@ -214,14 +236,27 @@ class CameraActivity : AppCompatActivity() {
             } else {
                 rawBitmap
             }
-            val start = System.nanoTime()
-            val stylized = currentRunner.stylize(bitmap)
-            val elapsed = (System.nanoTime() - start) / 1_000_000
-            val fps = if (elapsed > 0) 1000.0 / elapsed else 0.0
-            runOnUiThread {
-                stylizedOverlay.setImageBitmap(stylized)
-                textLatency.text = "${elapsed} ms | ${"%.1f".format(fps)} fps"
-                isProcessing = false
+
+            if (smoothMode && frameCounter % 2 == 1L && lastStylizedBitmap != null) {
+                // Skipped frame — blend last stylized with current raw
+                val stylized = blendBitmaps(lastStylizedBitmap!!, bitmap, blendAlpha)
+                runOnUiThread {
+                    stylizedOverlay.setImageBitmap(stylized)
+                    isProcessing = false
+                }
+
+            } else {
+                val start = System.nanoTime()
+                val stylized = currentRunner.stylize(bitmap)
+                val elapsed = (System.nanoTime() - start) / 1_000_000
+
+                lastStylizedBitmap = stylized
+                val fps = if (elapsed > 0) 1000.0 / elapsed else 0.0
+                runOnUiThread {
+                    stylizedOverlay.setImageBitmap(stylized)
+                    textLatency.text = "${elapsed} ms | ${"%.1f".format(fps)} fps"
+                    isProcessing = false
+                }
             }
         } catch (e: Exception) {
             Log.e("CameraActivity", "Frame processing failed", e)
@@ -230,6 +265,33 @@ class CameraActivity : AppCompatActivity() {
             imageProxy.close()
         }
     }
+
+    /**
+     * Alpha-blend two bitmaps: result = alpha * bmpA + (1 - alpha) * bmpB
+     * bmpA is drawn at full opacity, bmpB is drawn on top with (1-alpha) transparency.
+     */
+    private fun blendBitmaps(bmpA: Bitmap, bmpB: Bitmap, alpha: Float): Bitmap {
+        val width = bmpA.width
+        val height = bmpA.height
+        val outBmp = Bitmap.createBitmap(width, height, bmpA.config ?: Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(outBmp)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+        // Draw previous frame (bmpA) at alpha opacity
+        paint.alpha = (alpha * 255).toInt()
+        canvas.drawBitmap(bmpA, 0f, 0f, paint)
+
+        // Draw new frame (bmpB) at (1-alpha) opacity, scaled to match if needed
+        paint.alpha = ((1 - alpha) * 255).toInt()
+        if (bmpB.width != width || bmpB.height != height) {
+            val scaled = Bitmap.createScaledBitmap(bmpB, width, height, true)
+            canvas.drawBitmap(scaled, 0f, 0f, paint)
+        } else {
+            canvas.drawBitmap(bmpB, 0f, 0f, paint)
+        }
+        return outBmp
+    }
+
 
     private fun assetToFile(assetName: String): File {
         val outFile = File(filesDir, assetName)
