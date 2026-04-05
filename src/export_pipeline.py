@@ -76,6 +76,7 @@ class ExportConfig:
     # Export
     backend: Backend  # "xnnpack", "vulkan", "cpu"
     quantize: bool = False  # whether to apply ptq via torchao
+    precision: str = "fp32"
     # input_size: int | None = 256
     input_h: int = 256
     input_w: int = 256
@@ -95,7 +96,7 @@ class ExportConfig:
     @property
     def tag(self) -> str:
         """Unique tag encoding this config. Used for filenames."""
-        q = "int8" if self.quantize else "fp32"
+        q = self.precision if self.quantize else "fp32"
         return f"johnson_{self.norm_type.value}_{self.style_name}_{self.backend.value}_{q}_{self.input_h}x{self.input_w}{'_aspect' if self.keep_aspect else ''}{'_export_mode' if self.export_mode else ''}"
 
     @property
@@ -376,24 +377,37 @@ def export_model(cfg: ExportConfig):
     if cfg.backend == Backend.QNN:
         edge = _quantize_and_lower_qnn(model, example_input, cfg)
     else:
-        if cfg.quantize and cfg.backend == Backend.VULKAN:
-            calib_inputs = _load_calib_inputs(
-                CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w
-            )
-            quantized_module = _quantize_vulkan_int8(exported, calib_inputs)
-            exported = torch.export.export(quantized_module, example_input)
-        elif cfg.quantize and cfg.backend == Backend.XNNPACK:
-            calib_inputs = _load_calib_inputs(
-                CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w
-            )
-            quantized_module = _quantize_xnnpack_int8(exported, calib_inputs)
-            exported = torch.export.export(quantized_module, example_input)
-
         partitioner = {
             Backend.XNNPACK: [XnnpackPartitioner()],
             Backend.VULKAN: [VulkanPartitioner(), XnnpackPartitioner()],
             Backend.CPU: None,
         }[cfg.backend]
+
+        if cfg.precision == "int8":
+            if cfg.precision == "int8" and cfg.backend == Backend.VULKAN:
+                calib_inputs = _load_calib_inputs(
+                    CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w
+                )
+                quantized_module = _quantize_vulkan_int8(exported, calib_inputs)
+                exported = torch.export.export(quantized_module, example_input)
+            elif cfg.precision == "int8" and cfg.backend == Backend.XNNPACK:
+                calib_inputs = _load_calib_inputs(
+                    CALIB_IMAGES_DIR, cfg.input_h, cfg.input_w
+                )
+                quantized_module = _quantize_xnnpack_int8(exported, calib_inputs)
+                exported = torch.export.export(quantized_module, example_input)
+
+        elif cfg.precision == "fp16":
+            if cfg.backend == Backend.VULKAN:
+                partitioner = [
+                    VulkanPartitioner(compile_options={"force_fp16": True}),
+                    XnnpackPartitioner(),
+                ]
+            elif cfg.backend == Backend.XNNPACK:
+                logger.warning(
+                    "XNNPACK handles fp16 automatically at runtime on supported hardware. No export-time changes needed — exporting as fp32."
+                )
+                cfg.precision = "fp32"
 
         if partitioner:
             edge = to_edge_transform_and_lower(
@@ -707,6 +721,8 @@ def device_benchmark(
         f"--es model_path {DEVICE_BENCH_DIR}/model.pte "
         f"--es tag {tag} "
         f"--es backend {backend} "
+        f"--ei input_h {sidecar['config']['input_h']} "
+        f"--ei input_w {sidecar['config']['input_w']} "
         f"--ei warmup 10 "
         f"--ei iters {n_iters}",
         device_id,

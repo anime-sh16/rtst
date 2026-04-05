@@ -96,7 +96,9 @@ class BenchmarkActivity : AppCompatActivity() {
                 val warmup = intent.getIntExtra("warmup", 5)
                 val iters = intent.getIntExtra("iters", 20)
 
-                val runner = StyleTransferRunner(modelPath)
+                val inputH = intent.getIntExtra("input_h", 640)
+                val inputW = intent.getIntExtra("input_w", 480)
+                val runner = StyleTransferRunner(modelPath, inputH, inputW)
 
                 val inputBitmap = BitmapFactory.decodeFile(
                     File(File(modelPath).parent, "input.jpg").absolutePath
