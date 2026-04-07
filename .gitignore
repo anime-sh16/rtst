@@ -21,7 +21,8 @@ wandb/
 /data/coco/
 /data/validation/
 /data/
-/configs/
+/configs/*
+!/configs/template/
 /results/
 /models/
 exports/
