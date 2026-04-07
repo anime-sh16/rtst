@@ -2,7 +2,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
-from src.utils.image import load_image
+from src.utils.image import load_image, load_image_h_w
 
 
 class COCODataset(Dataset):
@@ -14,9 +14,18 @@ class COCODataset(Dataset):
         image_size: Images are resized to (image_size x image_size).
     """
 
-    def __init__(self, root: str | Path, image_size: int = 256) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        image_size: int | None,
+        image_h: int | None = None,
+        image_w: int | None = None,
+    ) -> None:
         self.root = Path(root)
         self.image_size = image_size
+
+        self.image_h = image_h
+        self.image_w = image_w
 
         extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
         self.paths = sorted(
@@ -36,16 +45,27 @@ class COCODataset(Dataset):
         Returns:
             Tensor of shape (3, image_size, image_size), normalised.
         """
-        return load_image(self.paths[idx], self.image_size)
+        if self.image_h and self.image_w:
+            img = load_image_h_w(self.paths[idx], self.image_h, self.image_w)
+        else:
+            if not self.image_size:
+                raise ValueError(
+                    "image_size must be specified if image_h and image_w are not specified"
+                )
+            img = load_image(self.paths[idx], self.image_size)
+
+        return img
 
 
 def build_dataloader(
     root: str | Path,
-    image_size: int,
+    image_size: int | None,
     batch_size: int,
     num_workers: int = 4,
     shuffle: bool = True,
     distributed: bool = False,
+    image_h: int | None = None,
+    image_w: int | None = None,
 ) -> tuple[DataLoader, DistributedSampler | None]:
     """Convenience factory that wires COCODataset into a DataLoader.
 
@@ -54,7 +74,14 @@ def build_dataloader(
         ``distributed=True``; callers must call ``sampler.set_epoch(epoch)``
         each epoch to ensure proper shuffling.
     """
-    dataset = COCODataset(root=root, image_size=image_size)
+    if image_h and image_w:
+        dataset = COCODataset(root=root, image_h=image_h, image_w=image_w)
+    else:
+        if not image_size:
+            raise ValueError(
+                "image_size must be specified if image_h and image_w are not specified"
+            )
+        dataset = COCODataset(root=root, image_size=image_size)
 
     sampler: DistributedSampler | None = None
     if distributed:
