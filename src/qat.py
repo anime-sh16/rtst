@@ -330,13 +330,14 @@ def qat_train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                 l2=f"{l2_val:.4f}",
             )
 
-            if (global_step + 1) % log_every == 0:
+            if (global_step) % log_every == 0:
                 wandb.log(
                     {
                         "loss/total": total_loss.item(),
-                        "loss/cosine": 1 - cos_sim,
-                        "loss/l2": l2_val,
+                        "loss/cosine": (1 - cos_sim) * cosine_weight,
+                        "loss/l2": l2_val * l2_weight,
                         "training/cos_sim": cos_sim,
+                        "training/l2": l2_val,
                         "training/learning_rate": optimizer.param_groups[0]["lr"],
                         "training/grad_norm": grad_norm.item(),
                         "training/batch_time": batch_time,
@@ -344,7 +345,7 @@ def qat_train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                     step=global_step,
                 )
 
-            if (global_step + 1) % eval_interval == 0:
+            if (global_step) % eval_interval == 0:
                 log_val_images(teacher, student, val_images, global_step + 1)
 
         # Checkpoint after each epoch
