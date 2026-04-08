@@ -52,4 +52,11 @@ val ALL_MODELS: List<ModelConfig> = listOf(
          inputHeight = 320,
          inputWidth = 240,
      ),
+     ModelConfig(
+         label = "BN / XNNPACK / int8 320x240 -- distilled",
+         assetName = "johnson_bn_mosaic_xnnpack_int8_320x240_distilled.pte",
+         backend = "xnnpack",
+         inputHeight = 320,
+         inputWidth = 240,
+     ),
 )
