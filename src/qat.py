@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import logging
+import json
 import os
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+import torchao
 import yaml
 import wandb
 from torch.optim import Adam
@@ -30,10 +32,13 @@ from executorch.backends.xnnpack.quantizer.xnnpack_quantizer import (
     get_symmetric_quantization_config,
     XNNPACKQuantizer,
 )
+from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPartitioner
+from executorch.exir import to_edge_transform_and_lower
 
 from src.models.trans_net import TransformationNetwork
 from src.utils.image import load_image_h_w, denormalize
 from src.data.dataset import build_dataloader
+from src.export_pipeline import analyze_delegation, compute_checkpoint_hash
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +46,40 @@ logger = logging.getLogger(__name__)
 # Boilerplate: logging, args, config
 
 
-def setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
+def setup_logging(level: int = logging.INFO) -> None:
+    """Configure a clean, readable logger with color-coded levels."""
+
+    class ColorFormatter(logging.Formatter):
+        COLORS = {
+            logging.DEBUG: "\033[90m",  # gray
+            logging.INFO: "\033[36m",  # cyan
+            logging.WARNING: "\033[33m",  # yellow
+            logging.ERROR: "\033[31m",  # red
+            logging.CRITICAL: "\033[1;31m",  # bold red
+        }
+        RESET = "\033[0m"
+        BOLD = "\033[1m"
+
+        def format(self, record: logging.LogRecord) -> str:
+            color = self.COLORS.get(record.levelno, self.RESET)
+            ts = time.strftime("%H:%M:%S", time.localtime(record.created))
+            ms = f"{record.created % 1:.3f}"[1:]
+            level = record.levelname.ljust(8)
+            name = record.name.split(".")[-1]
+            msg = record.getMessage()
+
+            return (
+                f"{self.BOLD}{color}{ts}{ms}{self.RESET}  "
+                f"{color}{level}{self.RESET}  "
+                f"\033[90m{name:<12}{self.RESET}  "
+                f"{msg}"
+            )
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorFormatter())
+    logging.root.handlers.clear()
+    logging.root.addHandler(handler)
+    logging.root.setLevel(level)
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,7 +112,7 @@ def load_teacher_model(
 ) -> TransformationNetwork:
     """Load the pretrained float model (teacher) and freeze it."""
     norm_type = (
-        nn.BatchNorm2d if config["model"]["norm_type"] == "batch" else nn.InstanceNorm2d
+        nn.BatchNorm2d if config["model"]["norm_type"] == "bn" else nn.InstanceNorm2d
     )
     teacher = TransformationNetwork(
         norm_layer_type=norm_type,
@@ -105,7 +138,7 @@ def build_qat_model(
 ) -> nn.Module:
     """Export → prepare_qat_pt2e: returns the QAT-prepared model with fake-quant nodes."""
     norm_type = (
-        nn.BatchNorm2d if config["model"]["norm_type"] == "batch" else nn.InstanceNorm2d
+        nn.BatchNorm2d if config["model"]["norm_type"] == "bn" else nn.InstanceNorm2d
     )
     image_h = config["data"]["image_h"]
     image_w = config["data"]["image_w"]
@@ -122,8 +155,11 @@ def build_qat_model(
         student.load_state_dict(checkpoint)
 
     # PT2E: export → prepare_qat_pt2e
-    example_inputs = (torch.randn(1, 3, image_h, image_w),)
-    exported = torch.export.export(student, example_inputs).module()
+    example_inputs = (torch.randn(2, 3, image_h, image_w),)
+    dynamic_shapes = ({0: torch.export.Dim("batch", min=1)},)
+    exported = torch.export.export(
+        student, example_inputs, dynamic_shapes=dynamic_shapes
+    ).module()
 
     quantizer = XNNPACKQuantizer()
     quantizer.set_global(
@@ -135,7 +171,7 @@ def build_qat_model(
     )
     prepared = prepare_qat_pt2e(exported, quantizer)
     prepared.to(device)
-    prepared.train()
+    torchao.quantization.pt2e.move_exported_model_to_train(prepared)
     return prepared
 
 
@@ -173,7 +209,7 @@ def log_val_images(
     global_step: int,
 ) -> None:
     """Run validation images through both models and log comparison to W&B."""
-    student.eval()
+    torchao.quantization.pt2e.move_exported_model_to_eval(student)
     with torch.no_grad():
         for idx, val_image in enumerate(val_images):
             teacher_out = teacher(val_image)
@@ -186,7 +222,7 @@ def log_val_images(
                 },
                 step=global_step,
             )
-    student.train()
+    torchao.quantization.pt2e.move_exported_model_to_train(student)
 
 
 # Main QAT training loop
@@ -258,6 +294,7 @@ def qat_train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Training loop
+    total_loss = None
     for epoch in range(start_epoch, num_epochs):
         pbar = tqdm(
             enumerate(dataloader),
@@ -311,6 +348,9 @@ def qat_train(config: dict[str, Any], resume_path: Path | None = None) -> None:
                 log_val_images(teacher, student, val_images, global_step + 1)
 
         # Checkpoint after each epoch
+        if total_loss is None:
+            logger.warning("Epoch %d had no batches — skipping checkpoint.", epoch + 1)
+            continue
         checkpoint = {
             "epoch": epoch,
             "model_state_dict": student.state_dict(),
@@ -331,8 +371,79 @@ def qat_train(config: dict[str, Any], resume_path: Path | None = None) -> None:
 
     # Convert QAT model → truly quantized int8
     quantized_model = convert_pt2e(student)
-    torch.save(quantized_model.state_dict(), config["training"]["final_model_path"])
-    logger.info("Saved quantized model to %s", config["training"]["final_model_path"])
+    logger.info("Quantized model graph:\n%s", quantized_model.graph)
+
+    torchao.quantization.pt2e.move_exported_model_to_eval(quantized_model)
+
+    image_h = config["data"]["image_h"]
+    image_w = config["data"]["image_w"]
+
+    # Move to CPU for ExecuTorch export (XNNPACK targets CPU)
+    quantized_model = quantized_model.cpu()
+    example_inputs = (torch.randn(1, 3, image_h, image_w),)
+
+    # Save as ExportedProgram (.pt2)
+    final_path = Path(config["training"]["final_model_path"])
+    os.makedirs(final_path.parent, exist_ok=True)
+    quantized_ep = torch.export.export(quantized_model, example_inputs)
+    pt2_path = final_path.with_suffix(".pt2")
+    torch.export.save(quantized_ep, str(pt2_path))
+    logger.info("Saved ExportedProgram to %s", pt2_path)
+    # Lower to ExecuTorch (.pte)
+    # QAT convert_pt2e already produced real quantized ops — skip PTQ, go straight to lowering
+    logger.info("Lowering to ExecuTorch...")
+    try:
+        edge = to_edge_transform_and_lower(
+            quantized_ep,
+            partitioner=[XnnpackPartitioner()],
+        )
+    except Exception as e:
+        logger.exception("to_edge_transform_and_lower failed: %s", e)
+        raise
+
+    logger.info("Analyzing delegation...")
+    delegate_analysis = analyze_delegation(edge)
+    logger.info("Delegation analysis complete")
+
+    with open(final_path.parent / "delegate_analysis.json", "w") as f:
+        json.dump(delegate_analysis, f, indent=4)
+    logger.info(
+        "Saved delegation analysis to %s", final_path.parent / "delegate_analysis.json"
+    )
+    et_program = edge.to_executorch()
+    logger.info("ExecuTorch lowering complete")
+    pte_path = final_path.with_suffix(".pte")
+    with open(pte_path, "wb") as f:
+        f.write(et_program.buffer)
+    logger.info("Saved ExecuTorch program to %s", pte_path)
+
+    # Build sidecar JSON for export_pipeline validate compatibility
+    sidecar = {
+        "tag": pte_path.stem,
+        "config": {
+            "checkpoint_path": config["model"]["checkpoint_path"],
+            "norm_type": config["model"]["norm_type"],
+            "input_h": image_h,
+            "input_w": image_w,
+            "keep_aspect": False,
+            "export_mode": config["model"].get("export_mode", True),
+            "backend": config["quantization"]["backend"],
+            "quantize": True,
+            "precision": "int8",
+            "cosine_similarity_threshold": 0.99,
+        },
+        "checkpoint_hash": compute_checkpoint_hash(config["model"]["checkpoint_path"]),
+        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "pytorch_version": str(torch.__version__),
+        "input_shape": [1, 3, image_h, image_w],
+        "output_shape": [1, 3, image_h, image_w],
+        "delegation_analysis": delegate_analysis,
+        "qat": True,
+    }
+    sidecar_path = pte_path.with_suffix(".json")
+    with open(sidecar_path, "w") as f:
+        json.dump(sidecar, f, indent=2)
+    logger.info("Saved sidecar to %s", sidecar_path)
 
     wandb.finish()
 
