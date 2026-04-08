@@ -17,7 +17,7 @@ class COCODataset(Dataset):
     def __init__(
         self,
         root: str | Path,
-        image_size: int | None,
+        image_size: int | None = None,
         image_h: int | None = None,
         image_w: int | None = None,
     ) -> None:
