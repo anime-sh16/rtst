@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 from src.models.trans_net import TransformationNetwork
+from src.models.trans_net_v2 import TransformationNetworkV2
 from src.models.loss_net import LossNetwork, LossFeatures
 from src.utils.image import (
     load_image,
@@ -55,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         help="export mode. if true, use zero padding and bilinear upsample",
     )
     parser.add_argument(
+        "--custom_model",
+        action="store_true",
+        help="use custom model. if true, use custom model",
+    )
+    parser.add_argument(
         "--resume",
         type=Path,
         default=None,
@@ -69,7 +75,10 @@ def load_config(config_path: Path) -> dict[str, Any]:
 
 
 def train(
-    config: dict[str, Any], export_mode: bool = False, resume_path: Path | None = None
+    config: dict[str, Any],
+    export_mode: bool = False,
+    custom_model: bool = False,
+    resume_path: Path | None = None,
 ) -> None:
     """
     Main training loop.
@@ -110,10 +119,18 @@ def train(
         )
 
     # Model setup
-    norm_type = (
-        nn.BatchNorm2d if config["model"]["norm_type"] == "batch" else nn.InstanceNorm2d
-    )
-    trans_net = TransformationNetwork(norm_type, export_mode=export_mode).to(device)
+    if not custom_model:
+        norm_type = (
+            nn.BatchNorm2d
+            if config["model"]["norm_type"] == "batch"
+            else nn.InstanceNorm2d
+        )
+        trans_net = TransformationNetwork(norm_type, export_mode=export_mode).to(device)
+    else:
+        se_attention = False
+        if config["model"]["se_attention"]:
+            se_attention = config["model"]["se_attention"]
+        trans_net = TransformationNetworkV2(se_attention_bool=se_attention).to(device)
     vgg16 = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).to(device)
     loss_net = LossNetwork(model=vgg16).to(device)  # Always frozen in LossNetwork
 
@@ -330,7 +347,12 @@ def main() -> None:
     if "RANK" in os.environ:
         dist.init_process_group(backend="nccl")
 
-    train(config, export_mode=args.export_mode, resume_path=args.resume)
+    train(
+        config,
+        export_mode=args.export_mode,
+        custom_model=args.custom_model,
+        resume_path=args.resume,
+    )
 
 
 if __name__ == "__main__":
