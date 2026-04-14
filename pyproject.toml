@@ -25,9 +25,6 @@ packages = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 
-[tool.uv.sources]
-executorch = { path = "../../open-source/executorch", editable = true }
-
 [dependency-groups]
 dev = [
     "ipykernel>=7.2.0",
