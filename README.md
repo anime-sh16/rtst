@@ -2,12 +2,18 @@
 
 A PyTorch implementation of [*Perceptual Losses for Real-Time Style Transfer and Super-Resolution*](docs/paper/1603.08155v1.pdf) (Johnson et al., 2016), trained on MS COCO 2017 and deployed on Android via [ExecuTorch](https://pytorch.org/executorch/).
 
-The project covers the full pipeline: training a feed-forward style transfer network in PyTorch, exporting it to multiple mobile backends (XNNPACK, Vulkan) at different precisions, running quantization-aware training to recover INT8 quality, and integrating the final model into an Android app for real-time video stylization.
+The project covers the full pipeline: training a feed-forward style transfer network in PyTorch, exporting it to multiple mobile backends (XNNPACK, Vulkan) at different◊ precisions, running quantization-aware training to recover INT8 quality, and integrating the final model into an Android app for real-time video stylization.
 
 <p align="center">
+  <img src="data/results/device/johnson%20vul%20fp32%20640x480.jpg" width="45%" alt="Vulkan FP32 — 640×480" />
+  <img src="data/results/device/johnson%20vul%20fp16.jpg" width="45%" alt="Vulkan FP16 — 320×240" />
+  <br/>
+  <img src="data/results/device/johnson%20xnn%20int8.jpg" width="45%" alt="XNNPACK INT8 (PTQ) — 320×240" />
+  <img src="data/results/device/johnson%20xnn%20int8%20distilled.jpg" width="45%" alt="XNNPACK INT8 (QAT-distilled) — 320×240" />
+</p>
 
-https://github.com/user-attachments/assets/PLACEHOLDER_VIDEO_ID
-
+<p align="center">
+  <em>On-device outputs — top: Vulkan FP32 (640×480), Vulkan FP16 (320×240); bottom: XNNPACK INT8 PTQ (320×240), XNNPACK INT8 QAT-distilled (320×240).</em>
 </p>
 
 ## Architecture
@@ -96,6 +102,14 @@ uv run python src/qat.py --config configs/qat_config.yaml
 
 The QAT model recovers the quality lost from naive post-training quantization — output is visually on par with the v1 FP16 Vulkan model, but runs on XNNPACK INT8:
 
+<p align="center">
+  <img src="data/results/int8/johnson%20xnn%20int8.jpg" width="45%" alt="XNNPACK INT8 (PTQ)" />
+  <img src="data/results/int8/johnson%20xnn%20int8%20distilled.jpg" width="45%" alt="XNNPACK INT8 (QAT-distilled)" />
+  <br/>
+  <em>Left: PTQ INT8 (washed-out colors, lost texture). Right: QAT-distilled INT8 (quality restored).</em>
+</p>
+
+
 | Config | Backend | Mean Latency | P95 Latency |
 |---|---|---|---|
 | v1: BN / FP16 / 640×480 | Vulkan | 454 ms | 457 ms |
@@ -118,9 +132,6 @@ The Android app (`android/`) loads `.pte` models via the ExecuTorch Android runt
 Built with Kotlin, CameraX 1.4.1, and ExecuTorch Android SDK 1.1.0 (Vulkan variant).
 
 With the v2 QAT-distilled INT8 model, the app achieves ~10–12 FPS real-time video stylization on the OnePlus 11.
-
-<!-- TODO: replace with actual video -->
-<!-- Real-time video demo: -->
 
 ## Project Structure
 
