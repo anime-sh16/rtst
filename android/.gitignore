@@ -1,0 +1,17 @@
+# Android Studio / IntelliJ
+.idea/
+*.iml
+
+# Gradle
+.gradle/
+build/
+app/build/
+
+# Local properties (SDK path, etc.)
+local.properties
+
+# ExecuTorch AAR (if using local nightly)
+app/libs/
+
+# Assets (model files are large binaries)
+app/src/main/assets/*.pte

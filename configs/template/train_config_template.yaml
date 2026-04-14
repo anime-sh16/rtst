@@ -11,7 +11,7 @@ model:
   # Norm layer used inside ResidualBlock, Downsample, Upsample.
   # "batch" → BatchNorm2d
   # "instance" → InstanceNorm2d
-  norm_type: "instance"
+  norm_type: "batch"
 
 training:
   epochs:        1

@@ -20,6 +20,10 @@ wandb/
 # Data & model weights
 /data/coco/
 /data/validation/
+/data/
+/configs/*
+!/configs/template/
+/results/
 /models/
 exports/
 outputs/

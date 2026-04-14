@@ -50,6 +50,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to YAML config.",
     )
     parser.add_argument(
+        "--export_mode",
+        action="store_true",
+        help="export mode. if true, use zero padding and bilinear upsample",
+    )
+    parser.add_argument(
         "--resume",
         type=Path,
         default=None,
@@ -63,7 +68,9 @@ def load_config(config_path: Path) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
+def train(
+    config: dict[str, Any], export_mode: bool = False, resume_path: Path | None = None
+) -> None:
     """
     Main training loop.
 
@@ -106,7 +113,7 @@ def train(config: dict[str, Any], resume_path: Path | None = None) -> None:
     norm_type = (
         nn.BatchNorm2d if config["model"]["norm_type"] == "batch" else nn.InstanceNorm2d
     )
-    trans_net = TransformationNetwork(norm_type).to(device)
+    trans_net = TransformationNetwork(norm_type, export_mode=export_mode).to(device)
     vgg16 = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).to(device)
     loss_net = LossNetwork(model=vgg16).to(device)  # Always frozen in LossNetwork
 
@@ -323,7 +330,7 @@ def main() -> None:
     if "RANK" in os.environ:
         dist.init_process_group(backend="nccl")
 
-    train(config, resume_path=args.resume)
+    train(config, export_mode=args.export_mode, resume_path=args.resume)
 
 
 if __name__ == "__main__":

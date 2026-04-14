@@ -5,13 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "executorch==1.1.0",
-    "torchao>=0.9.0",
+    "executorch",
     "matplotlib>=3.10.8",
-    "torch>=2.10.0",
+    "torch==2.11.0",
     "torchvision>=0.25.0",
     "wandb>=0.25.1",
     "tqdm>=4.67.3",
+    "tabulate>=0.10.0",
+    "torchao"
 ]
 
 [build-system]
@@ -23,6 +24,9 @@ packages = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.uv.sources]
+executorch = { path = "../../open-source/executorch", editable = true }
 
 [dependency-groups]
 dev = [

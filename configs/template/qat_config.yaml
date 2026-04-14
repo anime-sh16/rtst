@@ -1,0 +1,46 @@
+# Quantization-Aware Training (QAT) config
+# Fine-tunes a pretrained BN-variant TransformationNetwork for int8 precision
+# using output distillation (no perceptual loss — model already learned style).
+#
+# Usage: uv run python src/qat.py --config configs/qat_config.yaml
+
+# Pretrained model checkpoint (the "teacher" float model)
+model:
+  checkpoint_path: "models/training/fast-nst-bn-bilinear.pth"
+  norm_type: "batch"          # must match the pretrained model
+  export_mode: true           # zero-padding + bilinear upsample (export-safe ops)
+
+data:
+  content_dir: "/kaggle/input/datasets/awsaf49/coco-2017-dataset/coco2017/train2017"
+  validation_dir: "data/validation"
+  image_h: 320
+  image_w: 240
+  batch_size: 26
+  num_workers: 4
+
+training:
+  epochs: 5
+  learning_rate: 1.0e-4       # lower than full training — fine-tuning only
+
+  # Distillation loss weights
+  cosine_weight: 1.0          # weight for (1 - cosine_similarity) term
+  l2_weight: 0.01             # weight for L2 norm term
+
+  scheduler:
+    type: "cosine"
+    eta_min: 1.0e-7
+
+  max_grad_norm: 1000.0         # gradient clipping max norm
+
+  checkpoint_dir: "models/qat/qat_checkpoints"
+  final_model_path: "models/qat/fast-nst-bn-int8-qat.pth"
+
+quantization:
+  backend: "xnnpack"
+  is_per_channel: true
+  is_dynamic: false
+
+wandb:
+  project: "nst-qat"
+  run_name: "qat-bn-int8-distill"
+  log_every_n_steps: 50
