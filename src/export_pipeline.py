@@ -70,11 +70,17 @@ class Backend(str, Enum):
 class ExportConfig:
     # Model
     checkpoint_path: str  # path to .pth
-    norm_type: NormType  # "in" or "bn"
     style_name: str  # e.g. "starry_night", for naming
 
-    # Export
+    # Backend
     backend: Backend  # "xnnpack", "vulkan", "cpu"
+
+    # Model defaults
+    model_type: str = "johnson"  # "johnson" | "mobilenet"
+    se_attention: bool = False
+    norm_type: NormType = NormType.BATCH  # "in" or "bn"
+
+    # Export
     quantize: bool = False  # whether to apply ptq via torchao
     precision: str = "fp32"
     # input_size: int | None = 256
@@ -97,7 +103,7 @@ class ExportConfig:
     def tag(self) -> str:
         """Unique tag encoding this config. Used for filenames."""
         q = self.precision if self.quantize else "fp32"
-        return f"johnson_{self.norm_type.value}_{self.style_name}_{self.backend.value}_{q}_{self.input_h}x{self.input_w}{'_aspect' if self.keep_aspect else ''}{'_export_mode' if self.export_mode else ''}"
+        return f"{self.model_type}{'_se' if self.se_attention else ''}_{self.norm_type.value}_{self.style_name}_{self.backend.value}_{q}_{self.input_h}x{self.input_w}{'_aspect' if self.keep_aspect else ''}{'_export_mode' if self.export_mode else ''}"
 
     @property
     def pte_path(self) -> Path:
@@ -340,12 +346,11 @@ def export_model(cfg: ExportConfig):
     """
     TODO: Add the keep aspect flag usage for the dimension range to `export()`
     """
-    Path(cfg.pte_path.parent).mkdir(parents=True, exist_ok=True)
+    # Path(cfg.pte_path.parent).mkdir(parents=True, exist_ok=True)
 
     logger.info(f"[export] Loading checkpoint: {cfg.checkpoint_path}")
     logger.info(f"[export] Config tag: {cfg.tag}")
 
-    from src.models.trans_net import TransformationNetwork
     from executorch.exir import to_edge_transform_and_lower
     from executorch.backends.xnnpack.partition.xnnpack_partitioner import (
         XnnpackPartitioner,
@@ -354,12 +359,21 @@ def export_model(cfg: ExportConfig):
         VulkanPartitioner,
     )
 
-    norm_type = (
-        nn.InstanceNorm2d if cfg.norm_type == NormType.INSTANCE else nn.BatchNorm2d
-    )
-    model = TransformationNetwork(
-        norm_layer_type=norm_type, export_mode=cfg.export_mode
-    )
+    if cfg.model_type == "mobilenet":
+        from src.models.trans_net_v2 import TransformationNetworkV2
+
+        model = TransformationNetworkV2(
+            se_attention_bool=cfg.se_attention, export_mode=cfg.export_mode
+        )
+    else:
+        from src.models.trans_net import TransformationNetwork
+
+        norm_type = (
+            nn.InstanceNorm2d if cfg.norm_type == NormType.INSTANCE else nn.BatchNorm2d
+        )
+        model = TransformationNetwork(
+            norm_layer_type=norm_type, export_mode=cfg.export_mode
+        )
     model.load_state_dict(torch.load(cfg.checkpoint_path, map_location="cpu"))
     model.eval()
 
@@ -416,6 +430,8 @@ def export_model(cfg: ExportConfig):
         else:
             edge = to_edge_transform_and_lower(exported, generate_etrecord=True)
 
+    Path(cfg.pte_path.parent).mkdir(parents=True, exist_ok=True)
+
     delegate_analysis = analyze_delegation(edge)
 
     et_program = edge.to_executorch()
@@ -423,6 +439,7 @@ def export_model(cfg: ExportConfig):
     etrecord = et_program.get_etrecord()
     etrecord.update_representative_inputs(example_input)
     etrecord_path = cfg.pte_path.with_suffix(".bin")
+    etrecord_path.parent.mkdir(parents=True, exist_ok=True)
     etrecord.save(str(etrecord_path))
 
     logger.info(f"[export] ETRecord saved: {etrecord_path}")
@@ -488,7 +505,6 @@ def validate_on_host(pte_path: str, ref_image_path: str):
     the channels-last stride bug.
     """
     from executorch.runtime import Runtime, Verification
-    from src.models.trans_net import TransformationNetwork
     from src.utils.image import save_image
 
     sidecar_path = pte_path.replace(".pte", ".json")
@@ -502,18 +518,29 @@ def validate_on_host(pte_path: str, ref_image_path: str):
         cfg["keep_aspect"],
         cfg["export_mode"],
     )
+    model_type, se_attention = (cfg["model_type"], cfg["se_attention"])
 
     logger.info(f"[validate] Loading test image: {ref_image_path}")
     test_input = load_test_image(ref_image_path, h, w, keep_aspect)
 
     # --- PyTorch reference inference ---
-    norm_type = (
-        nn.InstanceNorm2d
-        if NormType(cfg["norm_type"]) == NormType.INSTANCE
-        else nn.BatchNorm2d
-    )
+    if model_type == "mobilenet":
+        from src.models.trans_net_v2 import TransformationNetworkV2
 
-    model = TransformationNetwork(norm_layer_type=norm_type, export_mode=export_mode)
+        model = TransformationNetworkV2(
+            se_attention_bool=se_attention, export_mode=export_mode
+        )
+    else:
+        norm_type = (
+            nn.InstanceNorm2d
+            if NormType(cfg["norm_type"]) == NormType.INSTANCE
+            else nn.BatchNorm2d
+        )
+        from src.models.trans_net import TransformationNetwork
+
+        model = TransformationNetwork(
+            norm_layer_type=norm_type, export_mode=export_mode
+        )
     model.load_state_dict(torch.load(cfg["checkpoint_path"], map_location="cpu"))
     model.eval()
     with torch.no_grad():
@@ -868,7 +895,9 @@ def main():
     )
     p_val.add_argument("--pte", required=True, help="Path to exported .pte file")
     p_val.add_argument(
-        "--ref-input", required=True, help="Path to reference test image"
+        "--ref-input",
+        default="data/test_inference/flower.jpg",
+        help="Path to reference test image",
     )
 
     # export and validate
@@ -877,7 +906,9 @@ def main():
         "--config", required=True, help="Path to export YAML config file"
     )
     p_e_v.add_argument(
-        "--ref-input", required=True, help="Path to reference test image"
+        "--ref-input",
+        default="data/test_inference/flower.jpg",
+        help="Path to reference test image",
     )
 
     # device-bench
