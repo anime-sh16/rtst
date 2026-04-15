@@ -36,6 +36,7 @@ from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPar
 from executorch.exir import to_edge_transform_and_lower
 
 from src.models.trans_net import TransformationNetwork
+from src.models.trans_net_v2 import TransformationNetworkV2
 from src.utils.image import load_image_h_w, denormalize
 from src.data.dataset import build_dataloader
 from src.export_pipeline import analyze_delegation, compute_checkpoint_hash
@@ -109,15 +110,23 @@ def load_config(config_path: Path) -> dict[str, Any]:
 
 def load_teacher_model(
     config: dict[str, Any], device: torch.device
-) -> TransformationNetwork:
+) -> TransformationNetwork | TransformationNetworkV2:
     """Load the pretrained float model (teacher) and freeze it."""
-    norm_type = (
-        nn.BatchNorm2d if config["model"]["norm_type"] == "bn" else nn.InstanceNorm2d
-    )
-    teacher = TransformationNetwork(
-        norm_layer_type=norm_type,
-        export_mode=config["model"]["export_mode"],
-    )
+    if config["model"]["model_type"] == "mobilenet":
+        teacher = TransformationNetworkV2(
+            se_attention_bool=config["model"]["se_attention"],
+            export_mode=config["model"]["export_mode"],
+        )
+    else:
+        norm_type = (
+            nn.BatchNorm2d
+            if config["model"]["norm_type"] == "bn"
+            else nn.InstanceNorm2d
+        )
+        teacher = TransformationNetwork(
+            norm_layer_type=norm_type,
+            export_mode=config["model"]["export_mode"],
+        )
     checkpoint = torch.load(config["model"]["checkpoint_path"], map_location=device)
     # Handle both raw state_dict and checkpoint dict formats
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
@@ -137,16 +146,24 @@ def build_qat_model(
     device: torch.device,
 ) -> nn.Module:
     """Export → prepare_qat_pt2e: returns the QAT-prepared model with fake-quant nodes."""
-    norm_type = (
-        nn.BatchNorm2d if config["model"]["norm_type"] == "bn" else nn.InstanceNorm2d
-    )
     image_h = config["data"]["image_h"]
     image_w = config["data"]["image_w"]
 
-    student = TransformationNetwork(
-        norm_layer_type=norm_type,
-        export_mode=config["model"]["export_mode"],
-    )
+    if config["model"]["model_type"] == "mobilenet":
+        student = TransformationNetworkV2(
+            se_attention_bool=config["model"]["se_attention"],
+            export_mode=config["model"]["export_mode"],
+        )
+    else:
+        norm_type = (
+            nn.BatchNorm2d
+            if config["model"]["norm_type"] == "bn"
+            else nn.InstanceNorm2d
+        )
+        student = TransformationNetwork(
+            norm_layer_type=norm_type,
+            export_mode=config["model"]["export_mode"],
+        )
     # Load same pretrained weights into student before QAT preparation
     checkpoint = torch.load(config["model"]["checkpoint_path"], map_location=device)
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
@@ -423,6 +440,8 @@ def qat_train(config: dict[str, Any], resume_path: Path | None = None) -> None:
         "tag": pte_path.stem,
         "config": {
             "checkpoint_path": config["model"]["checkpoint_path"],
+            "model_type": config["model"]["model_type"],
+            "se_attention": config["model"]["se_attention"],
             "norm_type": config["model"]["norm_type"],
             "input_h": image_h,
             "input_w": image_w,
