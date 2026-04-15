@@ -1,35 +1,28 @@
-# Real-Time Neural Style Transfer
+# Real-Time Neural Style Transfer on Android
 
-A PyTorch implementation of [*Perceptual Losses for Real-Time Style Transfer and Super-Resolution*](docs/paper/1603.08155v1.pdf) (Johnson et al., 2016), trained on MS COCO 2017 and deployed on Android via [ExecuTorch](https://pytorch.org/executorch/).
-
-The project covers the full pipeline: training a feed-forward style transfer network in PyTorch, exporting it to multiple mobile backends (XNNPACK, Vulkan) at different◊ precisions, running quantization-aware training to recover INT8 quality, and integrating the final model into an Android app for real-time video stylization.
+Shipping a neural style transfer model to Android at ~30 FPS real-time video. The project started as a PyTorch reimplementation of [Johnson et al. (2016)](docs/paper/1603.08155v1.pdf), but the bulk of the work is the deployment path: picking a mobile backend and precision, recovering INT8 quality with quantization-aware training, and swapping the transformer for a MobileNet-style architecture to push latency down further.
 
 <p align="center">
-  <img src="data/results/device/johnson%20vul%20fp32%20640x480.jpg" width="45%" alt="Vulkan FP32 — 640×480" />
-  <img src="data/results/device/johnson%20vul%20fp16.jpg" width="45%" alt="Vulkan FP16 — 320×240" />
+  <video src="data/results/video/mobilenet_vulkan_fp16_320x240.mp4" controls width="60%"></video>
   <br/>
-  <img src="data/results/device/johnson%20xnn%20int8.jpg" width="45%" alt="XNNPACK INT8 (PTQ) — 320×240" />
-  <img src="data/results/device/johnson%20xnn%20int8%20distilled.jpg" width="45%" alt="XNNPACK INT8 (QAT-distilled) — 320×240" />
+  <em>Final model on OnePlus 11 — MobileNet transformer, Vulkan FP16, 320×240.</em>
 </p>
 
-<p align="center">
-  <em>On-device outputs — top: Vulkan FP32 (640×480), Vulkan FP16 (320×240); bottom: XNNPACK INT8 PTQ (320×240), XNNPACK INT8 QAT-distilled (320×240).</em>
-</p>
+## Results
 
-## Architecture
+Three iterations, each solving a specific deployment problem. Chosen configs only — full tables live inside each section.
 
-The system has two networks:
+| Version | Model | Backend / Precision | Resolution | Mean Latency | P95 | Notes |
+|---|---|---|---|---|---|---|
+| v1 | Johnson BN | Vulkan FP16 | 320×240 | 119 ms | 122 ms | First usable config |
+| v2 | Johnson BN | XNNPACK INT8 (QAT) | 320×240 | 75 ms | 143 ms | INT8 without quality loss |
+| **v3** | **MobileNet** | **Vulkan FP16** | **320×240** | **25.9 ms** | **27.3 ms** | **Shipped — ~30 FPS** |
 
-| Network | Role | Trainable |
-|---|---|---|
-| **Transformer Net** | Feed-forward image transformation (encoder → 5 residual blocks → decoder) | Yes |
-| **Loss Net** (VGG-16) | Extracts intermediate features for perceptual loss computation | No (frozen) |
+## Starting point: PyTorch baseline
 
-During training, the transformer net learns to minimize a weighted combination of content loss, style loss, and total variation loss. At inference, only the transformer net is needed — a single forward pass stylizes an image.
+Johnson-style feed-forward style transfer: a transformer net (encoder → 5 residual blocks → decoder) trained against a frozen VGG-16 loss net using a weighted sum of content, style, and total-variation losses. At inference only the transformer net runs — a single forward pass stylizes an image.
 
-## Training
-
-Models were trained on **MS COCO 2017** (~118k images) with the **mosaic** style image on Kaggle (T4 x2).
+Trained on **MS COCO 2017** (~118k images) with the mosaic style image on Kaggle (T4 × 2):
 
 | Parameter | Value |
 |---|---|
@@ -37,134 +30,116 @@ Models were trained on **MS COCO 2017** (~118k images) with the **mosaic** style
 | Batch size | 24 per GPU |
 | Epochs | 3 |
 | Learning rate | 1e-3 → 1e-6 (cosine) |
-| Content weight | 5.0 |
-| Style weight | 2e5 |
+| Content / style weight | 5.0 / 1.5e5 |
 | Optimizer | Adam |
 
-Two variants were trained — one faithful to the paper (InstanceNorm, reflection padding, nearest upsampling) and one optimized for mobile (BatchNorm, zero padding, bilinear upsampling). The BN variant achieves 98.57% XNNPACK delegation vs. 32.5% for the IN variant, since XNNPACK natively supports BatchNorm as a delegated op while InstanceNorm falls back to CPU.
+The model generalizes beyond its 256×256 training resolution:
 
-The model generalizes well beyond its 256×256 training resolution:
-
-| Original | 256 (training res) | 512 | 1024 |
+| Original | 256 (train) | 512 | 1024 |
 |---|---|---|---|
 | ![](data/test_inference/flower.jpg) | ![](data/results/256/flower_style.jpg) | ![](data/results/512/flower_style.jpg) | ![](data/results/1024/flower_style.jpg) |
 
-Style image: `data/styles/mosaic.jpg`
+This baseline is the starting line, not the point of the project. The rest of this README is about getting it onto a phone.
 
-## Mobile Export (ExecuTorch)
+## v1 — Picking a backend and precision
 
-The export pipeline (`src/export_pipeline.py`) is config-driven: each YAML config specifies the checkpoint, backend, precision, and input resolution. The pipeline exports the model to an ExecuTorch `.pte` file, validates it against PyTorch on host via a C++ runner, and optionally benchmarks on a connected Android device.
+**Problem:** the paper-faithful model uses `InstanceNorm2d`, reflection padding, and nearest-neighbor upsampling — all of which hurt on mobile. On XNNPACK, only 32.5% of ops got delegated (the rest fell back to CPU), since InstanceNorm isn't a native XNNPACK op.
 
-```bash
-# Export
-uv run python src/export_pipeline.py export --config configs/export_configs/<config>.yaml
+**Fix:** a second variant with `BatchNorm2d` and bilinear upsampling. Padding is reflection at train time (to avoid edge fading) and swapped to zero padding at inference — this swap is transparent to quality but is natively delegated. Bilinear upsampling, on the other hand, had to be used at train time as well: swapping nearest → bilinear only at inference introduced slight blurring, so the model was trained with bilinear from the start. Delegation jumped from 32.5% to 98.57%. Same loss recipe, same training data, negligible quality difference.
 
-# Validate on host (C++ runner compares .pte output against PyTorch)
-uv run python src/export_pipeline.py validate --pte exports/<tag>.pte --ref-input data/test_inference/flower.jpg
+Then exported the BN variant across `{XNNPACK, Vulkan} × {FP32, FP16, INT8}` and benchmarked on device (OnePlus 11, Android 16). QNN (Qualcomm NPU) was also exported but couldn't be benchmarked — Android blocks direct Hexagon/NPU access for third-party apps via driver signing and SELinux. A LiteRT migration with the [Qualcomm QNN Accelerator](https://ai.google.dev/edge/litert/android/npu/qualcomm) would be the path forward there.
 
-# Full pipeline: export → validate → device benchmark
-uv run python src/export_pipeline.py full --config configs/export_configs/<config>.yaml --device-id <adb_device>
-```
-
-Models were exported across backends and precisions, then benchmarked on device (OnePlus 11, Android 16).
-
-### v1: Finding the right backend + precision
-
-Exported the BN variant to XNNPACK and Vulkan at FP32, FP16, and INT8. QNN (Qualcomm NPU) models were also exported but could not be benchmarked on device — Android restricts direct access to the Qualcomm Hexagon DSP/NPU from third-party apps via driver signing and SELinux policies. The practical alternative would be migrating to LiteRT with the [Qualcomm QNN Accelerator](https://ai.google.dev/edge/litert/android/npu/qualcomm).
-
-**Device benchmarks**:
-
-| Config | Backend | Mean Latency | P95 Latency |
+| Config | Backend | Mean | P95 |
 |---|---|---|---|
 | BN / FP32 / 640×480 | Vulkan | 603 ms | 608 ms |
 | BN / FP16 / 320×240 | Vulkan | 119 ms | 122 ms |
-| BN / INT8 / 320×240 | XNNPACK | 56 ms | 69 ms |
+| BN / INT8 (PTQ) / 320×240 | XNNPACK | 56 ms | 69 ms |
 
-FP16 and FP32 on Vulkan produced good quality output. INT8 on XNNPACK was significantly faster but with visibly degraded stylization quality — colors washed out, textures lost detail.
+INT8 on XNNPACK was the fastest — but post-training quantization visibly trashed the output (washed colors, lost texture). Vulkan INT8 in ExecuTorch is limited for conv-heavy models (coverage is mostly linear ops), so FP16 was the ceiling on Vulkan. XNNPACK at FP16/FP32 was too slow on CPU (~934 ms at 640×480).
 
-Vulkan's INT8 quantization support in ExecuTorch is limited for conv-heavy models (primarily covers linear ops), so FP16 is the practical best precision for Vulkan on this architecture. XNNPACK runs on CPU, so FP32/FP16 are too slow there (~934ms at 640×480).
+**v1 pick: Vulkan FP16** — best speed/quality trade-off at this stage.
 
-**v1 model: Vulkan FP16** — best trade-off between speed and output quality.
+## v2 — Recovering INT8 quality with QAT
 
-### v2: Quantization-Aware Training (QAT with distillation)
+**Problem:** INT8 on XNNPACK was 2× faster than Vulkan FP16 but the quality was unusable.
 
-INT8 was fast but the post-training quantization destroyed output quality. To fix this, I ran quantization-aware training using distillation:
+**Fix:** quantization-aware training. Two copies of the same architecture — one FP32, one with fake-quantization nodes inserted via `prepare_qat_pt2e`. The FP32 copy is frozen and supervises the fake-quant copy; the fake-quant copy's weights update so the model learns to be robust to the quantization error it will see post-`convert_pt2e`. (Same architecture on both sides — this isn't distillation in the usual cross-architecture sense, just FP32 supervision of a fake-quantized twin.)
 
-- **Teacher**: the original FP32 model (frozen)
-- **Student**: the same model with fake-quantization nodes inserted via PT2E (`prepare_qat_pt2e`)
-- **Loss**: weighted combination of `(1 - cosine_similarity)` and L2 norm between teacher and student outputs
-- **Training**: a few epochs on the same MS COCO data, cosine LR schedule
-- **Export**: `convert_pt2e` produces real INT8 ops → lowered directly to ExecuTorch `.pte`
+- **Loss:** weighted `(1 − cosine_similarity)` + L2 between the two outputs
+- **Schedule:** a few epochs on MS COCO, cosine LR
+- **Export:** `convert_pt2e` → real INT8 ops → lowered directly to ExecuTorch `.pte`
 
 ```bash
 uv run python src/qat.py --config configs/qat_config.yaml
 ```
 
-The QAT model recovers the quality lost from naive post-training quantization — output is visually on par with the v1 FP16 Vulkan model, but runs on XNNPACK INT8:
-
-<p align="center">
-  <img src="data/results/int8/johnson%20xnn%20int8.jpg" width="45%" alt="XNNPACK INT8 (PTQ)" />
-  <img src="data/results/int8/johnson%20xnn%20int8%20distilled.jpg" width="45%" alt="XNNPACK INT8 (QAT-distilled)" />
-  <br/>
-  <em>Left: PTQ INT8 (washed-out colors, lost texture). Right: QAT-distilled INT8 (quality restored).</em>
-</p>
-
-
-| Config | Backend | Mean Latency | P95 Latency |
+| Config | Backend | Mean | P95 |
 |---|---|---|---|
 | v1: BN / FP16 / 640×480 | Vulkan | 454 ms | 457 ms |
 | v1: BN / INT8 (PTQ) / 320×240 | XNNPACK | 56 ms | 69 ms |
 | **v2: BN / INT8 (QAT) / 320×240** | **XNNPACK** | **75 ms** | **143 ms** |
 
-The QAT INT8 model reaches ~12 FPS peak on device with quality matching the FP16 Vulkan output.
+<p align="center">
+  <img src="data/results/int8/johnson%20xnn%20int8.jpg" width="45%" alt="XNNPACK INT8 (PTQ)" />
+  <img src="data/results/int8/johnson%20xnn%20int8%20distilled.jpg" width="45%" alt="XNNPACK INT8 (QAT)" />
+  <br/>
+  <em>Left: post-training INT8 — washed-out colors, lost texture. Right: QAT INT8 — quality restored, latency unchanged.</em>
+</p>
 
-**v2 model: XNNPACK INT8 (QAT-distilled)** — faster than v1 with comparable quality.
+Output quality matches FP16 Vulkan; latency is ~1.5× faster. ~12 FPS peak on device.
 
-## Android App
+**v2 pick: XNNPACK INT8 (QAT).**
 
-The Android app (`android/`) loads `.pte` models via the ExecuTorch Android runtime and supports:
+## v3 — MobileNet transformer
 
-- **Photo mode**: pick or capture a photo, apply style transfer, view in gallery
-- **Video mode**: real-time style transfer on the camera feed using CameraX
-- **Benchmark mode**: measure inference latency, memory usage, and FPS on device
-- **Model switching**: multiple models bundled as assets, selectable at runtime
+**Problem:** even QAT INT8 capped around 12 FPS. To get to real-time video, the architecture itself had to change.
 
-Built with Kotlin, CameraX 1.4.1, and ExecuTorch Android SDK 1.1.0 (Vulkan variant).
+**Fix:** replace the transformer net's standard conv blocks with a MobileNet-style design — depthwise-separable convolutions, inverted residual blocks with linear bottlenecks (MobileNetV2-style), and the residual stack reduced from 5 → 3 blocks. Squeeze-and-excitation (SE) attention layers from MobileNetV3 were deliberately *not* used — they fragment the graph and hurt mobile delegation. To compensate for the reduced capacity, the **style weight was increased at train time** (the MobileNet variant needs a stronger style signal to match the Johnson BN output). Loss recipe and training data were otherwise unchanged.
 
-With the v2 QAT-distilled INT8 model, the app achieves ~10–12 FPS real-time video stylization on the OnePlus 11.
+| Config | Backend | Mean | P95 |
+|---|---|---|---|
+| MobileNet / FP16 / 320×240 | Vulkan | 25.9 ms | 27.3 ms |
+| MobileNet / FP16 / 640×480 | Vulkan | 90.1 ms | 93.5 ms |
+| MobileNet / FP32 / 320×240 | XNNPACK | 52.2 ms | 85.6 ms |
+| MobileNet / FP32 / 640×480 | XNNPACK | 196.5 ms | 239.4 ms |
+| MobileNet / INT8 (PTQ) / 320×240 | XNNPACK | 23.9 ms | 38.0 ms |
 
-## Project Structure
+INT8 PTQ was fastest on paper but degraded quality again, and only saved ~2 ms over Vulkan FP16. Vulkan FP16 matched INT8 latency *without* needing QAT, so it became the shipped config.
+
+**v3 pick (shipped): MobileNet / Vulkan FP16 / 320×240** — ~30 FPS, quality on par with Johnson BN.
+
+## Android app
+
+The app (`android/`) loads `.pte` models via the ExecuTorch Android runtime and supports:
+
+- **Photo mode** — pick or capture a photo, apply style transfer, view in gallery
+- **Video mode** — real-time stylization on the camera feed (CameraX)
+- **Benchmark mode** — on-device latency, memory, and FPS
+- **Model switching** — multiple `.pte` models bundled as assets, selectable at runtime
+
+Kotlin, CameraX 1.4.1, ExecuTorch Android SDK 1.1.0 (Vulkan variant).
+
+## Repo layout
 
 ```
 ├── src/
-│   ├── models/
-│   │   ├── trans_net.py             # Feed-forward transformer network
-│   │   └── loss_net.py              # VGG-16 feature extractor (frozen)
-│   ├── data/
-│   │   └── dataset.py               # MS COCO dataset loader
-│   ├── utils/
-│   │   ├── gram.py                  # Gram matrix computation
-│   │   ├── loss.py                  # Content, style, and TV loss functions
-│   │   └── image.py                 # Image I/O and transforms
-│   ├── train.py                     # Training loop (DDP, W&B, cosine LR, resume)
-│   ├── inference.py                 # Single/batch image stylization
-│   ├── export_pipeline.py           # ExecuTorch export, host validation, device benchmarking
-│   └── qat.py                       # Quantization-aware training (PT2E distillation)
-├── android/                         # Kotlin Android app (ExecuTorch runtime)
-├── cpp_eval/                        # C++ runner for host-side .pte validation
-├── configs/
-│   ├── train_config.yaml            # Training hyperparameters
-│   ├── export_configs/              # Per-model export configs
-│   └── template/                    # Config templates (training, export, QAT)
-├── data/                            # Style images, test images, inference results
-├── results/                         # Host validation and device benchmark outputs
-├── exports/                         # Exported .pte files and JSON sidecars
-├── models/                          # Trained checkpoints (gitignored)
-├── tests/                           # Unit tests (pytest)
-└── docs/                            # Guides and original paper
+│   ├── models/           # Transformer (Johnson + MobileNet variants), VGG-16 loss net
+│   ├── data/             # MS COCO dataset loader
+│   ├── utils/            # Gram matrix, loss functions, image I/O
+│   ├── train.py          # DDP training, W&B, cosine LR, resume
+│   ├── inference.py      # Single/batch stylization
+│   ├── export_pipeline.py # ExecuTorch export + host validation + device benchmark
+│   └── qat.py            # Quantization-aware training (PT2E)
+├── android/              # Kotlin Android app (ExecuTorch runtime)
+├── cpp_eval/             # C++ runner for host-side .pte validation
+├── configs/              # Training, export, and QAT YAML configs
+├── data/                 # Styles, test images, inference results
+├── exports/              # .pte files and JSON sidecars
+├── tests/                # pytest
+└── docs/                 # Guides and original paper
 ```
 
-## Setup & Usage
+## Setup & usage
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
@@ -174,41 +149,29 @@ cd rtst
 uv sync --all-extras
 ```
 
-**Train:**
 ```bash
-# Single GPU
-uv run python src/train.py --config configs/train_config.yaml
-
-# Multi-GPU (DDP)
+# Train
 uv run torchrun --nproc_per_node=<N> src/train.py --config configs/train_config.yaml
-```
 
-**Inference:**
-```bash
+# Inference
 uv run python src/inference.py --image path/to/image.jpg
-uv run python src/inference.py --image path/to/dir/ --image-size 512 --batch-size 4
-```
 
-**Export & benchmark:**
-```bash
+# Export → validate → benchmark on device
 uv run python src/export_pipeline.py full --config configs/export_configs/<config>.yaml --device-id <adb_device>
-```
 
-**QAT:**
-```bash
+# QAT
 uv run python src/qat.py --config configs/template/qat_config.yaml
-```
 
-**Development:**
-```bash
-uv run ruff check src/ tests/
-uv run ruff format src/ tests/
+# Dev
+uv run ruff check src/ tests/ && uv run ruff format src/ tests/
 uv run pytest tests/ -v
 ```
 
 ## References
 
 - Johnson, J., Alahi, A., & Fei-Fei, L. (2016). *Perceptual Losses for Real-Time Style Transfer and Super-Resolution.* [arXiv:1603.08155](https://arxiv.org/abs/1603.08155)
+- Sandler, M., Howard, A., Zhu, M., Zhmoginov, A., & Chen, L.-C. (2018). *MobileNetV2: Inverted Residuals and Linear Bottlenecks.* [arXiv:1801.04381](https://arxiv.org/abs/1801.04381)
+- Howard, A., Sandler, M., Chu, G., Chen, L.-C., Chen, B., Tan, M., Wang, W., Zhu, Y., Pang, R., Vasudevan, V., Le, Q. V., & Adam, H. (2019). *Searching for MobileNetV3.* [arXiv:1905.02244](https://arxiv.org/abs/1905.02244)
 
 ## License
 
