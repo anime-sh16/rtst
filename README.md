@@ -2,11 +2,9 @@
 
 Shipping a neural style transfer model to Android at ~30 FPS real-time video. The project started as a PyTorch reimplementation of [Johnson et al. (2016)](docs/paper/1603.08155v1.pdf), but the bulk of the work is the deployment path: picking a mobile backend and precision, recovering INT8 quality with quantization-aware training, and swapping the transformer for a MobileNet-style architecture to push latency down further.
 
-<p align="center">
-  <video src="data/results/video/mobilenet_vulkan_fp16_320x240.mp4" controls width="60%"></video>
-  <br/>
-  <em>Final model on OnePlus 11 — MobileNet transformer, Vulkan FP16, 320×240.</em>
-</p>
+https://github.com/user-attachments/assets/e8f765ec-86c0-4e9b-9225-70dcf24f7d00
+
+<p align="center"><em>Final model on OnePlus 11 — MobileNet transformer, Vulkan FP16, 320×240.</em></p>
 
 ## Results
 
