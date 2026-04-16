@@ -547,9 +547,9 @@ def validate_on_host(pte_path: str, ref_image_path: str):
         ref_output = model(test_input)
 
     # --- ExecuTorch Python Runtime inference ---
-    # .contiguous() is required to avoid the channels-last stride bug
-    # where the pybinding reads raw data pointers as NCHW regardless of
-    # actual tensor strides. See scripts/minimal_repro.py for details.
+    # .contiguous() is explicitly required: the pybinding reads raw data
+    # pointers as NCHW regardless of actual tensor strides, silently
+    # producing wrong outputs for channels-last inputs (ExecuTorch #18562).
     runtime = Runtime.get()
     program = runtime.load_program(pte_path, verification=Verification.Minimal)
     method = program.load_method("forward")
