@@ -13,7 +13,7 @@ Three iterations, each solving a specific deployment problem. Chosen configs onl
 | Version | Model | Backend / Precision | Resolution | Mean Latency | P95 | Notes |
 |---|---|---|---|---|---|---|
 | v1 | Johnson BN | Vulkan FP16 | 320×240 | 119 ms | 122 ms | First usable config |
-| v2 | Johnson BN | XNNPACK INT8 (QAT) | 320×240 | 75 ms | 143 ms | INT8 without quality loss |
+| v2 | Johnson BN | XNNPACK INT8 (QAT) | 320×240 | 56 ms | 70 ms | INT8 without quality loss |
 | **v3** | **MobileNet** | **Vulkan FP16** | **320×240** | **25.9 ms** | **27.3 ms** | **Shipped — ~30 FPS** |
 
 ## Starting point: PyTorch baseline
@@ -68,18 +68,18 @@ INT8 on XNNPACK was the fastest — but post-training quantization visibly trash
 - **Export:** `convert_pt2e` → real INT8 ops → lowered directly to ExecuTorch `.pte`
 
 ```bash
-uv run python src/qat.py --config configs/qat_config.yaml
+uv run python src/qat.py --config configs/template/qat_config.yaml
 ```
 
 | Config | Backend | Mean | P95 |
 |---|---|---|---|
 | v1: BN / FP16 / 640×480 | Vulkan | 454 ms | 457 ms |
 | v1: BN / INT8 (PTQ) / 320×240 | XNNPACK | 56 ms | 69 ms |
-| **v2: BN / INT8 (QAT) / 320×240** | **XNNPACK** | **75 ms** | **143 ms** |
+| **v2: BN / INT8 (QAT) / 320×240** | **XNNPACK** | **56 ms** | **70 ms** |
 
 <p align="center">
-  <img src="data/results/int8/johnson%20xnn%20int8.jpg" width="45%" alt="XNNPACK INT8 (PTQ)" />
-  <img src="data/results/int8/johnson%20xnn%20int8%20distilled.jpg" width="45%" alt="XNNPACK INT8 (QAT)" />
+  <img src="data/results/device/v2/johnson%20xnn%20int8.jpg" width="45%" alt="XNNPACK INT8 (PTQ)" />
+  <img src="data/results/device/v2/johnson%20xnn%20int8%20distilled.jpg" width="45%" alt="XNNPACK INT8 (QAT)" />
   <br/>
   <em>Left: post-training INT8 — washed-out colors, lost texture. Right: QAT INT8 — quality restored, latency unchanged.</em>
 </p>
@@ -92,7 +92,9 @@ Output quality matches FP16 Vulkan; latency is ~1.5× faster. ~12 FPS peak on de
 
 **Problem:** even QAT INT8 capped around 12 FPS. To get to real-time video, the architecture itself had to change.
 
-**Fix:** replace the transformer net's standard conv blocks with a MobileNet-style design — depthwise-separable convolutions, inverted residual blocks with linear bottlenecks (MobileNetV2-style), and the residual stack reduced from 5 → 3 blocks. Squeeze-and-excitation (SE) attention layers from MobileNetV3 were deliberately *not* used — they fragment the graph and hurt mobile delegation. To compensate for the reduced capacity, the **style weight was increased at train time** (the MobileNet variant needs a stronger style signal to match the Johnson BN output). Loss recipe and training data were otherwise unchanged.
+**Fix:** replace the transformer net's standard conv blocks with a MobileNet-style design — depthwise-separable convolutions, inverted residual blocks with linear bottlenecks (MobileNetV2-style), and the residual stack reduced from 5 → 3 blocks. Squeeze-and-excitation (SE) attention layers from MobileNetV3 were deliberately *not* used — they fragment the graph and hurt mobile delegation. Style weight was retuned at train time: the MobileNet variant needs **less** style weight than the Johnson BN baseline (the depthwise-separable blocks push style energy more readily), but **more** than the SE-attention variant that was tried and dropped. The final model trained with style weight **1.2e5** (vs 1.5e5 for Johnson BN). Everything else — learning rate schedule (1e-3 → 1e-6 cosine), batch size (24 per GPU), content weight (5.0), and training data (MS COCO 2017) — was kept the same as the Johnson BN config.
+
+Same QAT pipeline from v2 was also applied here to recover INT8 quality on the MobileNet architecture.
 
 | Config | Backend | Mean | P95 |
 |---|---|---|---|
@@ -101,8 +103,19 @@ Output quality matches FP16 Vulkan; latency is ~1.5× faster. ~12 FPS peak on de
 | MobileNet / FP32 / 320×240 | XNNPACK | 52.2 ms | 85.6 ms |
 | MobileNet / FP32 / 640×480 | XNNPACK | 196.5 ms | 239.4 ms |
 | MobileNet / INT8 (PTQ) / 320×240 | XNNPACK | 23.9 ms | 38.0 ms |
+| MobileNet / INT8 (QAT) / 320×240 | XNNPACK | 23.9 ms | 27.8 ms |
 
-INT8 PTQ was fastest on paper but degraded quality again, and only saved ~2 ms over Vulkan FP16. Vulkan FP16 matched INT8 latency *without* needing QAT, so it became the shipped config.
+<p align="center">
+  <img src="data/results/device/v3/mobilenet_vulkan_fp16.jpg" width="32%" alt="MobileNet Vulkan FP16" />
+  <img src="data/results/device/v3/mobilenet_xnn_int8_ptq.jpg" width="32%" alt="MobileNet XNNPACK INT8 (PTQ)" />
+  <img src="data/results/device/v3/mobilenet_xnn_int8_qat.jpg" width="32%" alt="MobileNet XNNPACK INT8 (QAT)" />
+  <br/>
+  <em>Left: Vulkan FP16 (shipped). Middle: XNNPACK INT8 (PTQ) — quality degraded. Right: XNNPACK INT8 (QAT) — quality recovered.</em>
+</p>
+
+INT8 PTQ was fastest on paper but degraded quality again. QAT recovered the quality at the same latency, but Vulkan FP16 already matched INT8 latency *without* needing QAT, so it became the shipped config.
+
+**Note:** the QAT INT8 XNNPACK model benchmarks at ~24 ms mean latency in isolation, but end-to-end in the app it lands closer to ~30 ms — camera acquisition, preprocessing, and display overhead eat the rest.
 
 **v3 pick (shipped): MobileNet / Vulkan FP16 / 320×240** — ~30 FPS, quality on par with Johnson BN.
 
@@ -149,16 +162,16 @@ uv sync --all-extras
 
 ```bash
 # Train
-uv run torchrun --nproc_per_node=<N> src/train.py --config configs/train_config.yaml
+uv run torchrun --nproc_per_node=<N> src/train.py --config <path/to/train/config>
 
 # Inference
-uv run python src/inference.py --image path/to/image.jpg
+uv run python src/inference.py --image <path/to/image.jpg>
 
 # Export → validate → benchmark on device
-uv run python src/export_pipeline.py full --config configs/export_configs/<config>.yaml --device-id <adb_device>
+uv run python src/export_pipeline.py full --config <path/to/export/config> --device-id <adb_device>
 
 # QAT
-uv run python src/qat.py --config configs/template/qat_config.yaml
+uv run python src/qat.py --config <path/to/qat/config>
 
 # Dev
 uv run ruff check src/ tests/ && uv run ruff format src/ tests/
