@@ -62,3 +62,38 @@ def compute_tv_loss(generated: torch.Tensor) -> torch.Tensor:
     y_diff = torch.abs(generated[:, :, :, 1:] - generated[:, :, :, :-1])
     loss = torch.mean(x_diff[:, :, :, :-1] + y_diff[:, :, :-1, :])
     return loss
+
+
+def compute_temporal_loss(
+    output_t: torch.Tensor,
+    output_t1: torch.Tensor,
+    feature_t: torch.Tensor,
+    feature_t1: torch.Tensor,
+    flow: torch.Tensor,
+    occlusion_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute ReCoNet-style temporal consistency losses between consecutive frames.
+
+    Three components:
+      1. Output temporal loss  — warped stylized_t vs stylized_t+1
+      2. Feature temporal loss — warped encoded_t vs encoded_t+1
+      3. Luminance temporal loss — warped luminance_t vs luminance_t+1
+
+    All losses are masked by (1 - occlusion_mask) so that occluded regions
+    (where flow is unreliable) don't contribute to the loss.
+
+    Args:
+        output_t:        Stylized output for frame t,     shape (B, 3, H, W).
+        output_t1:       Stylized output for frame t+1,   shape (B, 3, H, W).
+        feature_t:       Encoded features for frame t,    shape (B, C, H', W').
+        feature_t1:      Encoded features for frame t+1,  shape (B, C, H', W').
+        flow:            Optical flow t→t+1,              shape (B, 2, H, W).
+        occlusion_mask:  Occlusion mask,                  shape (B, 1, H, W).
+                         1 = occluded, 0 = visible.
+
+    Returns:
+        Tuple of (output_temporal_loss, feature_temporal_loss, luminance_temporal_loss).
+    """
+
+    raise NotImplementedError

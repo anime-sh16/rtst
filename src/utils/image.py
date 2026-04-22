@@ -2,7 +2,7 @@ from pathlib import Path
 import logging
 import os
 import torch
-
+import numpy as np
 from PIL import Image, ImageOps
 from torchvision.transforms import v2
 from torchvision.utils import save_image as tv_save_image
@@ -235,3 +235,12 @@ def denormalize(
     """
     tensor = tensor * std + mean
     return tensor.clamp(0, 1)
+
+
+def read_occlusion(path: str | Path) -> torch.Tensor:
+    """
+    Read a Sintel occlusion mask → (1, H, W) float32, 1.0 = occluded.
+    """
+    img = np.array(Image.open(path).convert("L"), dtype=np.float32) / 255.0
+    mask = (img > 0.5).astype(np.float32)
+    return torch.from_numpy(mask).unsqueeze(0)  # (1, H, W)

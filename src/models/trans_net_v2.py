@@ -222,7 +222,8 @@ class TransformationNetworkV2(nn.Module):
 
     def forward(self, x):
         x = self.downsample(x)
+        x_encoded = x
         x = self.residual_path(x)
         x = self.upsample(x)
         x = self.sigmoid(x)
-        return x
+        return x, x_encoded

@@ -130,7 +130,9 @@ def train(
         se_attention = False
         if config["model"]["se_attention"]:
             se_attention = config["model"]["se_attention"]
-        trans_net = TransformationNetworkV2(se_attention_bool=se_attention).to(device)
+        trans_net, _ = TransformationNetworkV2(se_attention_bool=se_attention).to(
+            device
+        )
     vgg16 = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).to(device)
     loss_net = LossNetwork(model=vgg16).to(device)  # Always frozen in LossNetwork
 

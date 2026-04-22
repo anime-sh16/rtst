@@ -1,0 +1,37 @@
+data:
+  sintel_root: "/path/to/MPI-Sintel"       # Root of Sintel dataset (contains training/)
+  style_path: "data/styles/mosaic.jpg"
+  validation_dir: "data/validation"
+  image_size: 256
+  batch_size: 8                              # Lower than training — 2 forward passes per step
+  num_workers: 2
+  render_pass: "clean"                       # "clean" or "final"
+
+model:
+  se_attention: false
+
+training:
+  epochs: 2
+  learning_rate: 1.0e-4                      # 10x lower than initial training
+
+  # Original losses (keep active to prevent style drift)
+  content_weight: 5.0
+  style_weight: 5.0e+4
+  tv_weight: 0.0
+
+  # Temporal losses (ReCoNet-style)
+  temporal_output_weight: 1.0e+2             # Start here, tune based on W&B
+  temporal_feature_weight: 1.0e+2
+  temporal_luminance_weight: 1.0e+2
+
+  scheduler:
+    type: "cosine"
+    eta_min: 1.0e-6
+
+  checkpoint_dir: "models/checkpoints/finetune"
+  final_model_path: "models/fast-nst-temporal.pth"
+
+wandb:
+  project: "configure-nst"
+  run_name: "finetune-temporal"
+  log_every_n_steps: 20
