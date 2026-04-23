@@ -76,7 +76,7 @@ class ExportConfig:
     backend: Backend  # "xnnpack", "vulkan", "cpu"
 
     # Model defaults
-    model_type: str = "johnson"  # "johnson" | "mobilenet"
+    model_type: str = "johnson"  # "johnson" | "mobilenet" | "temporal1"
     se_attention: bool = False
     norm_type: NormType = NormType.BATCH  # "in" or "bn"
 
@@ -359,7 +359,7 @@ def export_model(cfg: ExportConfig):
         VulkanPartitioner,
     )
 
-    if cfg.model_type == "mobilenet":
+    if cfg.model_type == "mobilenet" or cfg.model_type == "temporal1":
         from src.models.trans_net_v2 import TransformationNetworkV2
 
         model = TransformationNetworkV2(
@@ -524,7 +524,7 @@ def validate_on_host(pte_path: str, ref_image_path: str):
     test_input = load_test_image(ref_image_path, h, w, keep_aspect)
 
     # --- PyTorch reference inference ---
-    if model_type == "mobilenet":
+    if model_type == "mobilenet" or model_type == "temporal1":
         from src.models.trans_net_v2 import TransformationNetworkV2
 
         model = TransformationNetworkV2(

@@ -25,6 +25,13 @@ val ALL_MODELS: List<ModelConfig> = listOf(
          inputWidth = 240,
      ),
      ModelConfig(
+         label = "temporal / vulkan / fp16 320x240",
+         assetName = "temporal1_bn_mosaic_vulkan_fp16_320x240_export_mode.pte",
+         backend = "vulkan",
+         inputHeight = 320,
+         inputWidth = 240,
+     ),
+     ModelConfig(
          label = "mobnet / Vulkan / fp16 640x480",
          assetName = "mobilenet_bn_mosaic_vulkan_fp16_640x480_export_mode.pte",
          backend = "vulkan",
@@ -34,13 +41,6 @@ val ALL_MODELS: List<ModelConfig> = listOf(
      ModelConfig(
          label = "mobnet / XNNPACK / fp32 320x240",
          assetName = "mobilenet_bn_mosaic_xnnpack_fp32_320x240_export_mode.pte",
-         backend = "xnnpack",
-         inputHeight = 320,
-         inputWidth = 240,
-     ),
-     ModelConfig(
-         label = "mobnet / XNNPACK / int8 320x240",
-         assetName = "mobilenet_bn_mosaic_xnnpack_int8_320x240_export_mode.pte",
          backend = "xnnpack",
          inputHeight = 320,
          inputWidth = 240,
