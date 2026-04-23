@@ -1,11 +1,13 @@
-# ruff: noqa: F841
-
 """
-Fine-tune a pretrained style transfer model with temporal consistency loss.
-Tune all parameters in the model.
+Train a style transfer model with temporal consistency loss on video frame pairs.
+
+Trains all parameters end-to-end using content + style + TV + temporal losses.
+Optionally warm-starts from pretrained image-only weights for better initialization
+and faster convergence; otherwise trains from scratch.
 
 Usage:
-    uv run python src/finetune.py --config configs/finetune_config.yaml --weights models/fast-nst.pth
+    uv run python src/train_temporal.py --config configs/train_temporal_config.yaml \\
+        [--weights models/fast-nst.pth] [--resume checkpoints/ckpt_0.pth]
 """
 
 import argparse
@@ -55,19 +57,22 @@ def setup_logging() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fine-tune style transfer model with temporal loss."
+        description="Train style transfer model with temporal consistency loss."
     )
     parser.add_argument(
-        "--config", type=Path, required=True, help="Path to finetune YAML config."
+        "--config", type=Path, required=True, help="Path to training YAML config."
     )
     parser.add_argument(
-        "--weights", type=Path, required=True, help="Path to pretrained model weights."
+        "--weights",
+        type=Path,
+        default=None,
+        help="Optional pretrained image-only weights to warm-start from.",
     )
     parser.add_argument(
         "--resume",
         type=Path,
         default=None,
-        help="Path to finetune checkpoint to resume.",
+        help="Path to training checkpoint to resume.",
     )
     return parser.parse_args()
 
@@ -77,14 +82,17 @@ def load_config(config_path: Path) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def finetune(
+def train_temporal(
     config: dict[str, Any],
-    weights_path: Path,
+    weights_path: Path | None = None,
     resume_path: Path | None = None,
 ) -> None:
     """
-    Fine-tuning loop: loads pretrained weights, trains with
-    content + style + TV + temporal losses on video frame pairs.
+    Training loop for temporal-consistent style transfer.
+
+    Trains TransformationNetworkV2 with content + style + TV + temporal losses
+    on video frame pairs. If `weights_path` is given, warm-starts from those
+    (image-only) weights; otherwise trains from scratch.
     """
     distributed = dist.is_initialized()
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -105,10 +113,13 @@ def finetune(
     se_attention = config["model"].get("se_attention", False)
     trans_net = TransformationNetworkV2(se_attention_bool=se_attention).to(device)
 
-    # Load pretrained weights
-    pretrained_state = torch.load(weights_path, map_location=device)
-    trans_net.load_state_dict(pretrained_state)
-    logger.info("Loaded pretrained weights from %s", weights_path)
+    # Optional warm-start from pretrained image-only weights
+    if weights_path is not None:
+        pretrained_state = torch.load(weights_path, map_location=device)
+        trans_net.load_state_dict(pretrained_state)
+        logger.info("Warm-started from pretrained weights: %s", weights_path)
+    else:
+        logger.info("Training from scratch (no pretrained weights)")
 
     # Loss network (VGG16, frozen)
     vgg16 = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).to(device)
@@ -135,7 +146,7 @@ def finetune(
         distributed=distributed,
     )
 
-    # --- Optimizer (lower LR for fine-tuning) ---
+    # --- Optimizer ---
     optimizer = Adam(
         params=trans_net.parameters(),
         lr=config["training"]["learning_rate"],
@@ -151,7 +162,7 @@ def finetune(
     checkpoint_dir = Path(config["training"]["checkpoint_dir"])
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # Resume from finetune checkpoint
+    # Resume from training checkpoint
     start_epoch = 0
     if resume_path is not None:
         checkpoint = torch.load(resume_path, map_location=device)
@@ -384,7 +395,7 @@ def main() -> None:
     if "RANK" in os.environ:
         dist.init_process_group(backend="nccl")
 
-    finetune(config, weights_path=args.weights, resume_path=args.resume)
+    train_temporal(config, weights_path=args.weights, resume_path=args.resume)
 
 
 if __name__ == "__main__":
