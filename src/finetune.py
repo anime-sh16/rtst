@@ -171,6 +171,40 @@ def finetune(
             config=config,
         )
 
+    # Pre-load validation images for logging
+    val_images = [
+        load_image(path, config["data"]["image_size"]).unsqueeze(0).to(device)
+        for path in sorted(Path(config["data"]["validation_dir"]).iterdir())
+        if path.suffix.lower() in (".jpg", ".jpeg", ".png")
+    ]
+
+    if is_main:
+        logger.info(
+            "Loaded %d validation images from %s",
+            len(val_images),
+            config["data"]["validation_dir"],
+        )
+
+    def log_val_images(global_step: int) -> None:
+        """Run validation images through the model and log to W&B (main only)."""
+        if not is_main:
+            return
+        raw_model = trans_net.module if isinstance(trans_net, DDP) else trans_net
+        raw_model.eval()
+        with torch.no_grad():
+            for val_idx, val_image in enumerate(val_images):
+                gen_val, _ = raw_model(val_image)
+                wandb.log(
+                    {
+                        f"val/content_{val_idx}": wandb.Image(
+                            denormalize(val_image[0].cpu())
+                        ),
+                        f"val/generated_{val_idx}": wandb.Image(gen_val[0].cpu()),
+                    },
+                    step=global_step,
+                )
+        raw_model.train()
+
     # --- Training loop ---
     with loss_net as extractor:
         for epoch in range(start_epoch, config["training"]["epochs"]):
@@ -310,6 +344,8 @@ def finetune(
                         },
                         step=global_step,
                     )
+
+            log_val_images(epoch * len(dataloader) + len(dataloader) - 1)
 
             if is_main:
                 model_to_save = (
