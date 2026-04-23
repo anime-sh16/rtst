@@ -143,12 +143,12 @@ def load_image(
         )
     elif keep_aspect and size is None:
         # Keep original size, just round to multiple of 4
-        w, h = img.size
-        new_h = _round_down_to_multiple(h, 4)
-        new_w = _round_down_to_multiple(w, 4)
+        # w, h = img.size
+        # new_h = _round_down_to_multiple(h, 4)
+        # new_w = _round_down_to_multiple(w, 4)
         preprocess = v2.Compose(
             [
-                v2.CenterCrop((new_h, new_w)),
+                # v2.CenterCrop((new_h, new_w)),
                 v2.ToImage(),
                 v2.ToDtype(torch.float32, scale=True),
                 v2.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
@@ -244,3 +244,16 @@ def read_occlusion(path: str | Path) -> torch.Tensor:
     img = np.array(Image.open(path).convert("L"), dtype=np.float32) / 255.0
     mask = (img > 0.5).astype(np.float32)
     return torch.from_numpy(mask).unsqueeze(0)  # (1, H, W)
+
+
+def get_luminance(x: torch.Tensor) -> torch.Tensor:
+    """
+    Calculates the luminance of an RGB tensor [B, 3, H, W].
+    """
+    # Slice the channels. Keep dimension 1 so the shape remains [B, 1, H, W]
+    r = x[:, 0:1, :, :]
+    g = x[:, 1:2, :, :]
+    b = x[:, 2:3, :, :]
+
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return luminance

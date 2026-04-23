@@ -2,9 +2,10 @@ import struct
 import torch
 import torch.nn.functional as F
 import numpy as np
+from pathlib import Path
 
 
-def read_flo(path: str) -> torch.Tensor:
+def read_flo(path: str | Path) -> torch.Tensor:
     """
     Read a .flo optical flow file (Middlebury format).
 

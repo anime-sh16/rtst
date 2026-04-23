@@ -3,7 +3,6 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
-import torch.nn.functional as F
 
 from src.utils.image import load_image, read_occlusion
 from src.utils.warp import read_flo
@@ -43,20 +42,21 @@ class SintelFramePairDataset(Dataset):
     Each sample is a pair: (frame_N, frame_N+1, flow_N, occlusion_N).
     The last frame of each scene is skipped (no flow available).
 
+    Frames are loaded at their original Sintel resolution (1024x436) and
+    only ImageNet-normalized — no resize or crop is applied. Flow and
+    occlusion masks are returned as-is so they stay aligned with the frames.
+
     Args:
         root:         Path to Sintel root directory (contains training/).
-        image_size:   Resize dimension (square crop).
         render_pass:  Which render pass to use ("clean" or "final").
     """
 
     def __init__(
         self,
         root: str | Path,
-        image_size: int,
         render_pass: str = "clean",
     ) -> None:
         self.root = Path(root)
-        self.image_size = image_size
 
         frames_dir = self.root / "training" / render_pass
         flow_dir = self.root / "training" / "flow"
@@ -81,30 +81,16 @@ class SintelFramePairDataset(Dataset):
     def __getitem__(self, idx: int) -> FramePair:
         frame_t_path, frame_t1_path, flow_path, occ_path = self.pairs[idx]
 
-        frame_t = load_image(frame_t_path, self.image_size)
-        frame_t1 = load_image(frame_t1_path, self.image_size)
+        frame_t = load_image(frame_t_path, keep_aspect=True)
+        frame_t1 = load_image(frame_t1_path, keep_aspect=True)
         flow = read_flo(flow_path)
         occ = read_occlusion(occ_path)
 
-        flow_resized = F.interpolate(
-            flow.unsqueeze(0),
-            size=(self.image_size, self.image_size),
-            mode="bilinear",
-            align_corners=True,
-        ).squeeze(0)
-        flow_resized[0] *= self.image_size / flow.shape[2]  # scale horizontal flow
-        flow_resized[1] *= self.image_size / flow.shape[1]  # scale vertical flow
-
-        occ = F.interpolate(
-            occ.unsqueeze(0), size=(self.image_size, self.image_size), mode="nearest"
-        ).squeeze(0)
-
-        return FramePair(frame_t, frame_t1, flow_resized, occ)
+        return FramePair(frame_t, frame_t1, flow, occ)
 
 
 def build_video_dataloader(
     root: str | Path,
-    image_size: int,
     batch_size: int,
     render_pass: str = "clean",
     num_workers: int = 4,
@@ -119,7 +105,6 @@ def build_video_dataloader(
     """
     dataset = SintelFramePairDataset(
         root=root,
-        image_size=image_size,
         render_pass=render_pass,
     )
 
